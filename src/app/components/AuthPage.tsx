@@ -1,7 +1,7 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router';
-import { Zap, Mail, Lock, User, Chrome, ArrowRight, Eye, EyeOff } from 'lucide-react';
-import { supabase } from '../lib/supabase';
+import { useState, useEffect } from 'react';
+import { useNavigate, useSearchParams } from 'react-router';
+import { Zap, Mail, Lock, User, Chrome, ArrowRight, Eye, EyeOff, CheckCircle2, RefreshCw } from 'lucide-react';
+import { useAuth } from '../lib/AuthContext';
 
 interface AuthPageProps {
   mode: 'login' | 'signup';
@@ -9,11 +9,21 @@ interface AuthPageProps {
 
 export function AuthPage({ mode: initialMode }: AuthPageProps) {
   const navigate = useNavigate();
+  const { signUp, signIn, resendVerification, user } = useAuth();
   const [mode, setMode] = useState(initialMode);
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [form, setForm] = useState({ name: '', email: '', password: '' });
   const [errorMessage, setErrorMessage] = useState('');
+  const [needsVerification, setNeedsVerification] = useState(false);
+  const [searchParams] = useSearchParams();
+  const justVerified = searchParams.get('verified') === '1';
+
+  useEffect(() => {
+    if (user && !needsVerification) {
+      navigate('/dashboard', { replace: true });
+    }
+  }, [user, needsVerification, navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -22,27 +32,23 @@ export function AuthPage({ mode: initialMode }: AuthPageProps) {
 
     try {
       if (mode === 'signup') {
-        const { data, error } = await supabase.auth.signUp({
-          email: form.email,
-          password: form.password,
-          options: {
-            data: {
-              full_name: form.name,
-            },
-          },
-        });
-        if (error) {
-          setErrorMessage(error.message);
+        if (!form.name.trim()) {
+          setErrorMessage('Full name is required');
+          setLoading(false);
+          return;
+        }
+        const result = await signUp(form.email, form.password, form.name);
+        if (result.error) {
+          setErrorMessage(result.error);
+        } else if (result.needsVerification) {
+          setNeedsVerification(true);
         } else {
-          navigate('/onboarding');
+          navigate('/dashboard');
         }
       } else {
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email: form.email,
-          password: form.password,
-        });
-        if (error) {
-          setErrorMessage(error.message);
+        const result = await signIn(form.email, form.password);
+        if (result.error) {
+          setErrorMessage(result.error);
         } else {
           navigate('/dashboard');
         }
@@ -53,6 +59,133 @@ export function AuthPage({ mode: initialMode }: AuthPageProps) {
       setLoading(false);
     }
   };
+
+  const handleResend = async () => {
+    setLoading(true);
+    const result = await resendVerification(form.email);
+    if (result.error) setErrorMessage(result.error);
+    setLoading(false);
+  };
+
+  // Verification screen
+  if (needsVerification) {
+    return (
+      <div style={{
+        minHeight: '100vh',
+        background: '#0a0a0f',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontFamily: 'var(--font-sans)',
+        padding: 24,
+      }}>
+        <div style={{ width: '100%', maxWidth: 420 }}>
+          {/* Logo */}
+          <div style={{ textAlign: 'center', marginBottom: 40 }}>
+            <button
+              onClick={() => navigate('/')}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}
+            >
+              <div style={{
+                width: 44,
+                height: 44,
+                borderRadius: 12,
+                background: 'linear-gradient(135deg, #7C6AF7, #a78bfa)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: '0 0 30px rgba(124,106,247,0.3)',
+              }}>
+                <Zap size={22} color="#fff" />
+              </div>
+              <span style={{ fontSize: 22, fontWeight: 700, color: '#e8e8f0', letterSpacing: '-0.02em' }}>Brillance</span>
+            </button>
+          </div>
+
+          <div style={{
+            background: '#111118',
+            border: '1px solid rgba(255,255,255,0.07)',
+            borderRadius: 16,
+            padding: 36,
+            textAlign: 'center',
+          }}>
+            <div style={{
+              width: 56,
+              height: 56,
+              borderRadius: '50%',
+              background: 'rgba(124,106,247,0.15)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 20px',
+            }}>
+              <CheckCircle2 size={28} color="#7C6AF7" />
+            </div>
+            <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 6, color: '#e8e8f0' }}>
+              Check your email
+            </h2>
+            <p style={{ fontSize: 14, color: '#6b6b8a', marginBottom: 8, lineHeight: 1.5 }}>
+              We sent a verification link to <strong style={{ color: '#a89bfa' }}>{form.email}</strong>
+            </p>
+            <p style={{ fontSize: 13, color: '#4a4a6a', marginBottom: 28 }}>
+              Click the link in the email to activate your account, then sign in.
+            </p>
+
+            {errorMessage && (
+              <div style={{
+                background: 'rgba(239,68,68,0.1)',
+                border: '1px solid rgba(239,68,68,0.25)',
+                borderRadius: 8,
+                padding: '10px 14px',
+                fontSize: 13,
+                color: '#ef4444',
+                marginBottom: 20,
+                textAlign: 'center',
+              }}>
+                {errorMessage}
+              </div>
+            )}
+
+            <button
+              onClick={handleResend}
+              disabled={loading}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                background: 'rgba(255,255,255,0.04)',
+                border: '1px solid rgba(255,255,255,0.1)',
+                color: '#e8e8f0',
+                padding: '11px 24px',
+                borderRadius: 10,
+                cursor: loading ? 'not-allowed' : 'pointer',
+                fontSize: 14,
+                fontWeight: 500,
+                marginBottom: 20,
+              }}
+            >
+              {loading ? (
+                <div style={{ width: 16, height: 16, border: '2px solid rgba(255,255,255,0.3)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+              ) : (
+                <RefreshCw size={16} />
+              )}
+              Resend email
+            </button>
+
+            <p style={{ fontSize: 14, color: '#6b6b8a' }}>
+              Already verified?{' '}
+              <button
+                onClick={() => { setNeedsVerification(false); setMode('login'); }}
+                style={{ background: 'none', border: 'none', color: '#a78bfa', cursor: 'pointer', fontWeight: 600 }}
+              >
+                Sign in
+              </button>
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{
@@ -112,6 +245,21 @@ export function AuthPage({ mode: initialMode }: AuthPageProps) {
           <p style={{ fontSize: 14, color: '#6b6b8a', textAlign: 'center', marginBottom: 28 }}>
             {mode === 'login' ? 'Sign in to your Brillance workspace' : 'Start converting designs to Flutter code'}
           </p>
+
+          {justVerified && mode === 'login' && (
+            <div style={{
+              background: 'rgba(34,197,94,0.1)',
+              border: '1px solid rgba(34,197,94,0.25)',
+              borderRadius: 8,
+              padding: '10px 14px',
+              fontSize: 13,
+              color: '#22c55e',
+              marginBottom: 20,
+              textAlign: 'center',
+            }}>
+              Email verified! Sign in to your account.
+            </div>
+          )}
 
           {errorMessage && (
             <div style={{

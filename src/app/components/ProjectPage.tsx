@@ -8,6 +8,7 @@ import {
   Figma, Upload, EyeOff, X, FileUp
 } from 'lucide-react';
 import { toast } from 'sonner';
+import JSZip from 'jszip';
 import { api, apiJson, apiFormData, API_BASE } from '../lib/api';
 import { GallerySkeleton, CodeSkeleton } from './Skeletons';
 import { NoComponents } from './EmptyStates';
@@ -233,6 +234,9 @@ export function ProjectPage() {
   const [selectedElement, setSelectedElement] = useState<any>(null);
   const [elementFlutterCode, setElementFlutterCode] = useState('');
   const [elementLoading, setElementLoading] = useState(false);
+  const [selectionMode, setSelectionMode] = useState<'single' | 'container' | 'full'>('single');
+  const [fullPageResults, setFullPageResults] = useState<{ screen_code: string; widgets: { name: string; section: string; code: string }[] } | null>(null);
+  const [viewingWidget, setViewingWidget] = useState<{ name: string; code: string } | null>(null);
   const [savedComponents, setSavedComponents] = useState<any[]>([]);
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [saveName, setSaveName] = useState('');
@@ -381,6 +385,114 @@ export function ProjectPage() {
     }
   }, [id]);
 
+  const handleFullPageConvert = useCallback(async () => {
+    if (!rawHtml) {
+      toast.error('No HTML content available to convert');
+      return;
+    }
+    setElementLoading(true);
+    try {
+      const response = await apiJson('/generate/flutter/page', {
+        method: 'POST',
+        body: JSON.stringify({
+          html: rawHtml,
+          conversion_type: 'full_page',
+          options: {
+            split_into_widgets: true,
+            create_screen: true,
+            rtl: false,
+          },
+        }),
+      });
+      setFullPageResults(response);
+      setViewingWidget({ name: 'GeneratedPage', code: response.screen_code });
+      toast.success(`Successfully generated ${response.total_widgets} widgets`);
+    } catch {
+      toast.error('Failed to convert full page to Flutter');
+    } finally {
+      setElementLoading(false);
+    }
+  }, [rawHtml]);
+
+  const toSnakeCase = (str: string) => {
+    return str
+      .replace(/([A-Z]+)/g, '_$1')
+      .replace(/^_/, '')
+      .toLowerCase();
+  };
+
+  const handleDownloadZip = useCallback(async () => {
+    if (!fullPageResults) return;
+    setElementLoading(true);
+    try {
+      const zip = new JSZip();
+      const folder = zip.folder('flutter_widgets');
+      if (!folder) throw new Error('Could not create folder in ZIP');
+
+      // Screen code
+      folder.file('generated_page.dart', fullPageResults.screen_code);
+
+      // Widget files
+      fullPageResults.widgets.forEach(w => {
+        const fileName = `${toSnakeCase(w.name)}.dart`;
+        folder.file(fileName, w.code);
+      });
+
+      // Index exports file
+      const exports = fullPageResults.widgets.map(w => 
+        `export '${toSnakeCase(w.name)}.dart';`
+      ).join('\n');
+      folder.file('index.dart', exports);
+
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'brillance_flutter_widgets.zip';
+      a.click();
+      toast.success('ZIP downloaded successfully');
+    } catch (err: any) {
+      toast.error('Failed to generate ZIP', { description: err.message });
+    } finally {
+      setElementLoading(false);
+    }
+  }, [fullPageResults]);
+
+  const handleSaveAllToLibrary = useCallback(async () => {
+    if (!fullPageResults) return;
+    
+    toast.promise(
+      Promise.all([
+        apiJson(`/api/projects/${id}/selected-components`, {
+          method: 'POST',
+          body: JSON.stringify({
+            element_html: '<!-- Main Screen -->',
+            flutter_code: fullPageResults.screen_code,
+            component_name: 'GeneratedPage',
+          }),
+        }),
+        ...fullPageResults.widgets.map(w =>
+          apiJson(`/api/projects/${id}/selected-components`, {
+            method: 'POST',
+            body: JSON.stringify({
+              element_html: `<!-- Section: ${w.section} -->`,
+              flutter_code: w.code,
+              component_name: w.name,
+            }),
+          })
+        )
+      ]).then(async () => {
+        const data = await apiJson(`/api/projects/${id}/selected-components`);
+        setSavedComponents(data);
+      }),
+      {
+        loading: 'Saving all widgets to library...',
+        success: 'All widgets saved successfully!',
+        error: 'Failed to save some widgets to library',
+      }
+    );
+  }, [fullPageResults, id]);
+
   // Figma import handler
   const handleFigmaImport = useCallback(async () => {
     setFigmaImporting(true);
@@ -441,7 +553,7 @@ export function ProjectPage() {
 
   useEffect(() => {
     const handler = (event: MessageEvent) => {
-      if (event.data?.type === 'ELEMENT_SELECTED') {
+      if (event.data?.type === 'ELEMENT_SELECTED' || event.data?.type === 'CONTAINER_SELECTED') {
         fetchElementCode(event.data);
       }
     };
@@ -702,39 +814,91 @@ export function ProjectPage() {
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
         {/* Preview toolbar */}
         <div style={{ padding: '12px 20px', borderBottom: '1px solid rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', gap: 12 }}>
-          {selected && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ fontSize: 15, fontWeight: 600 }}>{selected.name}</span>
-              <ChevronRight size={14} color="#4a4a6a" style={{ display: 'inline' }} />
-              <span style={{ fontSize: 13, color: '#6b6b8a' }}>{selected.type}</span>
-              {selected.variants && selected.variants.length > 0 && (
-                <div style={{ display: 'flex', gap: 4, marginLeft: 4 }}>
-                  {selected.variants.map((v: string) => (
-                    <span key={v} style={{
-                      fontSize: 10, color: '#0a84ff', background: 'rgba(10,132,255,0.1)',
-                      border: '1px solid rgba(10,132,255,0.2)', padding: '2px 6px',
-                      borderRadius: 4, whiteSpace: 'nowrap',
-                    }}>
-                      {v}
-                    </span>
-                  ))}
-                </div>
-              )}
-              {selected.source === 'figma' && (
-                <a
-                  href={selected.figma_url || '#'}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{
-                    fontSize: 11, color: '#0a84ff', textDecoration: 'none',
-                    background: 'rgba(10,132,255,0.1)', border: '1px solid rgba(10,132,255,0.2)',
-                    padding: '3px 8px', borderRadius: 5, display: 'flex', alignItems: 'center', gap: 4,
-                  }}
-                >
-                  <Figma size={12} /> View in Figma
-                </a>
-              )}
+          {htmlPreviewMode ? (
+            <div style={{ display: 'flex', gap: 4, background: '#13131e', padding: 3, borderRadius: 8, border: '1px solid rgba(255,255,255,0.05)' }}>
+              <button
+                onClick={() => {
+                  setSelectionMode('single');
+                  setFullPageResults(null);
+                  setSelectedElement(null);
+                  setElementFlutterCode('');
+                }}
+                style={{
+                  background: selectionMode === 'single' ? 'rgba(124,106,247,0.15)' : 'none',
+                  border: 'none',
+                  color: selectionMode === 'single' ? '#a78bfa' : '#6b6b8a',
+                  padding: '5px 12px', borderRadius: 6, cursor: 'pointer', fontSize: 12, display: 'flex', alignItems: 'center', gap: 5, fontWeight: 500
+                }}
+              >
+                🎯 Single Element
+              </button>
+              <button
+                onClick={() => {
+                  setSelectionMode('container');
+                  setFullPageResults(null);
+                  setSelectedElement(null);
+                  setElementFlutterCode('');
+                }}
+                style={{
+                  background: selectionMode === 'container' ? 'rgba(124,106,247,0.15)' : 'none',
+                  border: 'none',
+                  color: selectionMode === 'container' ? '#a78bfa' : '#6b6b8a',
+                  padding: '5px 12px', borderRadius: 6, cursor: 'pointer', fontSize: 12, display: 'flex', alignItems: 'center', gap: 5, fontWeight: 500
+                }}
+              >
+                📦 Container Mode
+              </button>
+              <button
+                onClick={() => {
+                  setSelectionMode('full');
+                  setSelectedElement(null);
+                  setElementFlutterCode('');
+                }}
+                style={{
+                  background: selectionMode === 'full' ? 'rgba(124,106,247,0.15)' : 'none',
+                  border: 'none',
+                  color: selectionMode === 'full' ? '#a78bfa' : '#6b6b8a',
+                  padding: '5px 12px', borderRadius: 6, cursor: 'pointer', fontSize: 12, display: 'flex', alignItems: 'center', gap: 5, fontWeight: 500
+                }}
+              >
+                📄 Full Page
+              </button>
             </div>
+          ) : (
+            selected && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 15, fontWeight: 600 }}>{selected.name}</span>
+                <ChevronRight size={14} color="#4a4a6a" style={{ display: 'inline' }} />
+                <span style={{ fontSize: 13, color: '#6b6b8a' }}>{selected.type}</span>
+                {selected.variants && selected.variants.length > 0 && (
+                  <div style={{ display: 'flex', gap: 4, marginLeft: 4 }}>
+                    {selected.variants.map((v: string) => (
+                      <span key={v} style={{
+                        fontSize: 10, color: '#0a84ff', background: 'rgba(10,132,255,0.1)',
+                        border: '1px solid rgba(10,132,255,0.2)', padding: '2px 6px',
+                        borderRadius: 4, whiteSpace: 'nowrap',
+                      }}>
+                        {v}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {selected.source === 'figma' && (
+                  <a
+                    href={selected.figma_url || '#'}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      fontSize: 11, color: '#0a84ff', textDecoration: 'none',
+                      background: 'rgba(10,132,255,0.1)', border: '1px solid rgba(10,132,255,0.2)',
+                      padding: '3px 8px', borderRadius: 5, display: 'flex', alignItems: 'center', gap: 4,
+                    }}
+                  >
+                    <Figma size={12} /> View in Figma
+                  </a>
+                )}
+              </div>
+            )
           )}
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
             <button
@@ -742,6 +906,8 @@ export function ProjectPage() {
                 setHtmlPreviewMode(m => !m);
                 setSelectedElement(null);
                 setElementFlutterCode('');
+                setFullPageResults(null);
+                setSelectionMode('single');
               }}
               style={{
                 background: htmlPreviewMode ? 'rgba(124,106,247,0.15)' : 'rgba(255,255,255,0.05)',
@@ -786,23 +952,170 @@ export function ProjectPage() {
           overflow: 'hidden',
         }}>
           {htmlPreviewMode ? (
-            rawHtml ? (
-              <iframe
-                ref={iframeRef}
-                src={`${API_BASE}/preview/${id}`}
-                style={{
+            fullPageResults ? (
+              <div style={{
+                width: '100%',
+                height: '100%',
+                background: '#0a0a0f',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: 24,
+                boxSizing: 'border-box'
+              }}>
+                <div style={{
+                  background: '#16161f',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: 16,
+                  padding: '32px 40px',
                   width: '100%',
-                  height: '100%',
-                  border: 'none',
-                  background: '#fff',
-                }}
-                title="HTML Preview"
-                sandbox="allow-scripts allow-same-origin"
-              />
-            ) : (
-              <div style={{ color: '#6b6b8a', fontSize: 14, alignSelf: 'center', margin: 'auto' }}>
-                No HTML content available. Upload an HTML file first.
+                  maxWidth: 500,
+                  boxShadow: '0 20px 40px rgba(0,0,0,0.5)',
+                  textAlign: 'center'
+                }}>
+                  <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'rgba(16,185,129,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
+                    <Check size={24} color="#10b981" />
+                  </div>
+                  <h3 style={{ fontSize: 18, fontWeight: 600, color: '#e8e8f0', marginBottom: 4 }}>
+                    Generated {fullPageResults.widgets.length} Flutter Widgets
+                  </h3>
+                  <p style={{ fontSize: 13, color: '#6b6b8a', marginBottom: 24 }}>
+                    Your full page has been successfully compiled into clean, production-ready Flutter code.
+                  </p>
+                  
+                  {/* Buttons */}
+                  <div style={{ display: 'flex', gap: 12, justifyContent: 'center', marginBottom: 24 }}>
+                    <button
+                      onClick={handleDownloadZip}
+                      disabled={elementLoading}
+                      style={{
+                        flex: 1,
+                        background: 'linear-gradient(135deg, #7C6AF7 0%, #5a45d8 100%)',
+                        border: 'none',
+                        color: '#fff',
+                        padding: '12px 20px',
+                        borderRadius: 8,
+                        fontSize: 13,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: 8,
+                        boxShadow: '0 4px 12px rgba(124, 106, 247, 0.25)'
+                      }}
+                    >
+                      {elementLoading ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+                      Download ZIP
+                    </button>
+                    <button
+                      onClick={handleSaveAllToLibrary}
+                      style={{
+                        flex: 1,
+                        background: 'rgba(16,185,129,0.1)',
+                        border: '1px solid rgba(16,185,129,0.25)',
+                        color: '#34d399',
+                        padding: '12px 20px',
+                        borderRadius: 8,
+                        fontSize: 13,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: 8
+                      }}
+                    >
+                      <Upload size={15} />
+                      Save to Library
+                    </button>
+                  </div>
+                  
+                  {/* Back to Preview Link */}
+                  <button
+                    onClick={() => setFullPageResults(null)}
+                    style={{ background: 'none', border: 'none', color: '#6b6b8a', cursor: 'pointer', fontSize: 12, textDecoration: 'underline' }}
+                  >
+                    Back to preview
+                  </button>
+                </div>
               </div>
+            ) : (
+              rawHtml ? (
+                <>
+                  <iframe
+                    ref={iframeRef}
+                    src={`${API_BASE}/preview/${id}?mode=${selectionMode}`}
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      border: 'none',
+                      background: '#fff',
+                    }}
+                    title="HTML Preview"
+                    sandbox="allow-scripts allow-same-origin"
+                  />
+                  {selectionMode === 'full' && (
+                    <div style={{
+                      position: 'absolute',
+                      inset: 0,
+                      background: 'rgba(10, 10, 15, 0.7)',
+                      backdropFilter: 'blur(4px)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 16,
+                      zIndex: 10
+                    }}>
+                      <div style={{
+                        background: 'rgba(22, 22, 31, 0.95)',
+                        border: '1px solid rgba(255, 255, 255, 0.08)',
+                        borderRadius: 16,
+                        padding: '32px 40px',
+                        textAlign: 'center',
+                        maxWidth: 400,
+                        boxShadow: '0 20px 40px rgba(0,0,0,0.5)'
+                      }}>
+                        <Layout size={40} color="#7C6AF7" style={{ marginBottom: 16, display: 'inline-block' }} />
+                        <h3 style={{ fontSize: 18, fontWeight: 600, color: '#e8e8f0', marginBottom: 8 }}>Convert Full Page</h3>
+                        <p style={{ fontSize: 13, color: '#6b6b8a', marginBottom: 24 }}>
+                          This will parse your HTML and automatically generate a main Flutter Screen widget and split all sections into separate sub-widgets.
+                        </p>
+                        <button
+                          onClick={handleFullPageConvert}
+                          disabled={elementLoading}
+                          style={{
+                            background: 'linear-gradient(135deg, #7C6AF7 0%, #5a45d8 100%)',
+                            border: 'none',
+                            color: '#fff',
+                            padding: '12px 24px',
+                            borderRadius: 8,
+                            fontSize: 14,
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            boxShadow: '0 4px 12px rgba(124, 106, 247, 0.3)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: 8,
+                            width: '100%',
+                            transition: 'transform 0.2s'
+                          }}
+                        >
+                          {elementLoading ? <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> : <Globe size={16} />}
+                          {elementLoading ? 'Converting page...' : 'Convert Page → Flutter'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div style={{ color: '#6b6b8a', fontSize: 14, alignSelf: 'center', margin: 'auto' }}>
+                  No HTML content available. Upload an HTML file first.
+                </div>
+              )
             )
           ) : (
             selected ? (
@@ -970,33 +1283,88 @@ export function ProjectPage() {
         )}
 
         {/* Tabs + code */}
-        <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.05)', padding: '0 20px', gap: 4 }}>
-          {(['widget', 'tokens', 'usage'] as Tab[]).map(tab => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              style={{
-                background: 'none',
-                border: 'none',
-                borderBottom: activeTab === tab ? '2px solid #7C6AF7' : '2px solid transparent',
-                color: activeTab === tab ? '#a78bfa' : '#6b6b8a',
-                padding: '10px 14px',
-                cursor: 'pointer',
-                fontSize: 13,
-                fontWeight: activeTab === tab ? 600 : 400,
-                textTransform: 'capitalize',
-                transition: 'color 0.15s',
-              }}
-            >
-              {tab === 'widget' ? 'Widget Code' : tab === 'tokens' ? 'Theme Tokens' : 'Usage Example'}
-            </button>
-          ))}
-        </div>
+        {!(selectionMode === 'full' && fullPageResults) && (
+          <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.05)', padding: '0 20px', gap: 4 }}>
+            {(['widget', 'tokens', 'usage'] as Tab[]).map(tab => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  borderBottom: activeTab === tab ? '2px solid #7C6AF7' : '2px solid transparent',
+                  color: activeTab === tab ? '#a78bfa' : '#6b6b8a',
+                  padding: '10px 14px',
+                  cursor: 'pointer',
+                  fontSize: 13,
+                  fontWeight: activeTab === tab ? 600 : 400,
+                  textTransform: 'capitalize',
+                  transition: 'color 0.15s',
+                }}
+              >
+                {tab === 'widget' ? 'Widget Code' : tab === 'tokens' ? 'Theme Tokens' : 'Usage Example'}
+              </button>
+            ))}
+          </div>
+        )}
+        {selectionMode === 'full' && fullPageResults && (
+          <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.05)', padding: '10px 20px', gap: 4, alignItems: 'center' }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: '#a78bfa' }}>Generated Flutter Page Widgets</span>
+          </div>
+        )}
 
         <div style={{ flex: 1, overflow: 'hidden', padding: '12px 20px', paddingBottom: 0 }}>
           {activeTab === 'widget' && (
             htmlPreviewMode ? (
-              elementLoading ? <CodeSkeleton lines={14} /> : <CodeBlock code={elementFlutterCode || '// Click an element in the HTML Preview to parse and view code'} />
+              selectionMode === 'full' && fullPageResults ? (
+                <div style={{ display: 'flex', height: '100%', gap: 16 }}>
+                  {/* Left: list of widgets */}
+                  <div style={{ width: 220, display: 'flex', flexDirection: 'column', gap: 6, borderRight: '1px solid rgba(255,255,255,0.05)', paddingRight: 12, overflowY: 'auto' }}>
+                    <div style={{ fontSize: 11, color: '#3a3a52', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Files</div>
+                    <button
+                      onClick={() => setViewingWidget({ name: 'GeneratedPage', code: fullPageResults.screen_code })}
+                      style={{
+                        textAlign: 'left',
+                        padding: '6px 8px',
+                        borderRadius: 6,
+                        border: 'none',
+                        background: viewingWidget?.name === 'GeneratedPage' ? 'rgba(124,106,247,0.1)' : 'none',
+                        color: viewingWidget?.name === 'GeneratedPage' ? '#a78bfa' : '#6b6b8a',
+                        fontSize: 12,
+                        fontFamily: 'var(--font-mono)',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      📄 GeneratedPage
+                    </button>
+                    {fullPageResults.widgets.map(w => (
+                      <button
+                        key={w.name}
+                        onClick={() => setViewingWidget({ name: w.name, code: w.code })}
+                        style={{
+                          textAlign: 'left',
+                          padding: '6px 8px',
+                          borderRadius: 6,
+                          border: 'none',
+                          background: viewingWidget?.name === w.name ? 'rgba(124,106,247,0.1)' : 'none',
+                          color: viewingWidget?.name === w.name ? '#a78bfa' : '#6b6b8a',
+                          fontSize: 12,
+                          fontFamily: 'var(--font-mono)',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        🧩 {w.name}
+                      </button>
+                    ))}
+                  </div>
+                  {/* Right: code block */}
+                  <div style={{ flex: 1, height: '100%' }}>
+                    {viewingWidget ? <CodeBlock code={viewingWidget.code} /> : <div style={{ color: '#6b6b8a', fontSize: 13 }}>Select a file to view code</div>}
+                  </div>
+                </div>
+              ) : (
+                elementLoading ? <CodeSkeleton lines={14} /> : <CodeBlock code={elementFlutterCode || '// Click an element in the HTML Preview to parse and view code'} />
+              )
             ) : (
               loadingCode ? <CodeSkeleton lines={14} /> : <CodeBlock code={flutterCode} />
             )

@@ -4,7 +4,7 @@ import {
   Zap, LayoutDashboard, Palette, Settings,
   FolderOpen, Bell, Search, Command, LogOut
 } from 'lucide-react';
-import { supabase } from '../lib/supabase';
+import { useAuth } from '../lib/AuthContext';
 
 interface AppShellProps {
   children: ReactNode;
@@ -28,21 +28,7 @@ export function AppShell({ children, fullWidth }: AppShellProps) {
   const navigate = useNavigate();
   const location = useLocation();
   const [cmdOpen, setCmdOpen] = useState(false);
-  const [user, setUser] = useState<any>(null);
-
-  useEffect(() => {
-    // Get initial session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null);
-    });
-
-    // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
-    });
-
-    return () => subscription.unsubscribe();
-  }, []);
+  const { user, signOut } = useAuth();
 
   return (
     <div style={{ display: 'flex', height: '100vh', background: '#0a0a0f', fontFamily: 'var(--font-sans)', overflow: 'hidden' }}>
@@ -191,7 +177,7 @@ export function AppShell({ children, fullWidth }: AppShellProps) {
               </div>
               <div style={{ overflow: 'hidden', flex: 1 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: '#e8e8f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {user?.user_metadata?.full_name || user?.email || 'Amir Al-Rashid'}
+                  {user?.full_name || user?.email || 'Amir Al-Rashid'}
                 </div>
                 <div style={{ fontSize: 11, color: '#4a4a6a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {user?.email || 'Pro plan'}
@@ -199,10 +185,7 @@ export function AppShell({ children, fullWidth }: AppShellProps) {
               </div>
             </div>
             <button
-              onClick={async () => {
-                await supabase.auth.signOut();
-                navigate('/login');
-              }}
+              onClick={signOut}
               title="Sign Out"
               style={{
                 background: 'none',

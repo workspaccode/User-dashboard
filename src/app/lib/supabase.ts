@@ -79,8 +79,8 @@ class MockSupabaseAuth {
 export const supabase = (supabaseUrl && supabaseAnonKey)
   ? createClient(supabaseUrl, supabaseAnonKey)
   : ({
-      auth: new MockSupabaseAuth(),
-    } as any);
+    auth: new MockSupabaseAuth(),
+  } as any);
 
 if (!supabaseUrl || !supabaseAnonKey) {
   console.warn(
