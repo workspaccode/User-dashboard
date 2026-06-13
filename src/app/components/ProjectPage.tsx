@@ -514,6 +514,13 @@ export function ProjectPage() {
               >
                 <Figma size={14} />
               </button>
+              <button
+                onClick={() => document.getElementById('html-file-input')?.click()}
+                title="Import from HTML"
+                style={{ background: 'rgba(167,139,250,0.1)', border: '1px solid rgba(167,139,250,0.2)', color: '#a78bfa', padding: 6, borderRadius: 6, cursor: 'pointer' }}
+              >
+                <Upload size={14} />
+              </button>
               <input
                 type="file" id="html-file-input" accept=".html,.htm"
                 style={{ display: 'none' }}
@@ -961,27 +968,34 @@ export function ProjectPage() {
 
         <div style={{ flex: 1, overflow: 'hidden', padding: '12px 20px', paddingBottom: 0 }}>
           {activeTab === 'widget' && (
-            loadingCode ? <CodeSkeleton lines={14} /> : <CodeBlock code={flutterCode} />
+            htmlPreviewMode ? (
+              elementLoading ? <CodeSkeleton lines={14} /> : <CodeBlock code={elementFlutterCode || '// Click an element in the HTML Preview to parse and view code'} />
+            ) : (
+              loadingCode ? <CodeSkeleton lines={14} /> : <CodeBlock code={flutterCode} />
+            )
           )}
-          {activeTab === 'tokens' && selected && (
+          {activeTab === 'tokens' && (htmlPreviewMode ? selectedElement : selected) && (
             <div style={{ height: '100%', overflow: 'auto', fontFamily: 'var(--font-mono)', fontSize: 13, lineHeight: 1.8 }}>
-              {[
-                ['styles.bg', selected.styles?.bg || '#7C6AF7', '#color'],
-                ['styles.color', selected.styles?.color || '#ffffff', '#color'],
-                ['styles.radius', `${selected.styles?.radius !== undefined ? selected.styles.radius : 8}px`, '#shape'],
-                ['styles.padding', JSON.stringify(selected.styles?.padding || [12, 24]), '#spacing'],
-                ['bounds.w', `${selected.bounds?.w || 200}px`, '#layout'],
-                ['bounds.h', `${selected.bounds?.h || 44}px`, '#layout'],
-              ].map(([key, val, kind]) => (
-                <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                  <span style={{ color: '#a78bfa', flex: 1 }}>{key}</span>
-                  <span style={{ color: '#34d399' }}>{val}</span>
-                  <span style={{ color: '#4a4a6a', fontSize: 11 }}>{kind}</span>
-                </div>
-              ))}
+              {(() => {
+                const comp = htmlPreviewMode ? selectedElement : selected;
+                return [
+                  ['styles.bg', comp.styles?.bg || '#7C6AF7', '#color'],
+                  ['styles.color', comp.styles?.color || '#ffffff', '#color'],
+                  ['styles.radius', `${comp.styles?.radius !== undefined ? comp.styles.radius : 8}px`, '#shape'],
+                  ['styles.padding', JSON.stringify(comp.styles?.padding || [12, 24]), '#spacing'],
+                  ['bounds.w', `${comp.bounds?.w || 200}px`, '#layout'],
+                  ['bounds.h', `${comp.bounds?.h || 44}px`, '#layout'],
+                ].map(([key, val, kind]) => (
+                  <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                    <span style={{ color: '#a78bfa', flex: 1 }}>{key}</span>
+                    <span style={{ color: '#34d399' }}>{val}</span>
+                    <span style={{ color: '#4a4a6a', fontSize: 11 }}>{kind}</span>
+                  </div>
+                ));
+              })()}
             </div>
           )}
-          {activeTab === 'usage' && selected && (
+          {activeTab === 'usage' && (htmlPreviewMode ? selectedElement : selected) && (
             <CodeBlock code={`// Usage example - drop into any widget tree
 @override
 Widget build(BuildContext context) {
@@ -990,7 +1004,7 @@ Widget build(BuildContext context) {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          ${selected.name}(),
+          ${(htmlPreviewMode ? selectedElement : selected).name}(),
           const SizedBox(height: 12),
           Text(
             'Rendered inside ${projectName}',
