@@ -8,6 +8,7 @@ import {
   Figma, Upload, EyeOff, X, FileUp
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { api, apiJson, apiFormData } from '../lib/api';
 import { GallerySkeleton, CodeSkeleton } from './Skeletons';
 import { NoComponents } from './EmptyStates';
 
@@ -255,12 +256,7 @@ export function ProjectPage() {
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const res = await fetch('http://localhost:8000/parse/svg', {
-        method: 'POST',
-        body: formData,
-      });
-      if (!res.ok) throw new Error('SVG parse failed');
-      const data = await res.json();
+      const data = await apiFormData('/parse/svg', formData);
       const svgComps = (Array.isArray(data) ? data : data.components || []).map((c: any) => ({
         ...c,
         color: c.styles?.bg || '#10b981',
@@ -271,9 +267,8 @@ export function ProjectPage() {
         setSelected(svgComps[0]);
         toast.success(`Imported ${svgComps.length} component(s) from SVG`);
       }
-    } catch (err: any) {
-      console.error('SVG import error:', err);
-      toast.error('SVG import failed', 'Make sure the backend is running');
+    } catch {
+      toast.error('SVG import failed');
     } finally {
       setSvgImporting(false);
     }
@@ -285,33 +280,21 @@ export function ProjectPage() {
 
     const loadProjectAndComponents = async () => {
       try {
-        // Fetch project metadata
-        const projectRes = await fetch(`http://localhost:8000/api/projects/${id}`);
-        if (projectRes.ok) {
-          const projectData = await projectRes.json();
-          setProjectName(projectData.name);
-        } else {
-          const fallbackNames: Record<string, string> = {
-            '1': 'Noon E-Commerce App',
-            '2': 'Paystack Dashboard',
-            '3': 'Grab Mobile UI',
-            '4': 'Careem Design System',
-          };
-          setProjectName(fallbackNames[id] || 'Custom Project');
-        }
+        const projectData = await apiJson(`/api/projects/${id}`);
+        setProjectName(projectData.name);
 
-        // Fetch project components
-        const componentsRes = await fetch(`http://localhost:8000/api/projects/${id}/components`);
-        if (componentsRes.ok) {
-          const componentsData = await componentsRes.json();
+        try {
+          const componentsData = await apiJson<any[]>(`/api/projects/${id}/components`);
           if (componentsData && componentsData.length > 0) {
             setComponentsList(componentsData);
             setSelected(componentsData[0]);
             return;
           }
+        } catch {
+          // components fetch failed, fall through
         }
         throw new Error('Fallback to static components');
-      } catch (err) {
+      } catch {
         console.warn('Backend fetch failed, using fallback component lists.');
         toast.error('Could not load project', 'Using fallback data');
         
@@ -355,21 +338,17 @@ export function ProjectPage() {
   // Fetch raw HTML for preview
   useEffect(() => {
     if (!id) return;
-    fetch(`http://localhost:8000/api/projects/${id}`)
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (data?.raw_html) setRawHtml(data.raw_html);
-      })
-      .catch(() => { toast.error('Failed to load HTML preview', 'Check backend connection'); });
+    apiJson(`/api/projects/${id}`)
+      .then(data => { if (data?.raw_html) setRawHtml(data.raw_html); })
+      .catch(() => { toast.error('Failed to load HTML preview'); });
   }, [id]);
 
   // Fetch saved components
   useEffect(() => {
     if (!id) return;
-    fetch(`http://localhost:8000/api/projects/${id}/selected-components`)
-      .then(r => r.ok ? r.json() : [])
+    apiJson(`/api/projects/${id}/selected-components`)
       .then(data => setSavedComponents(data))
-      .catch(() => { toast.error('Failed to load saved components', 'Check backend connection'); });
+      .catch(() => { toast.error('Failed to load saved components'); });
   }, [id]);
 
   // Listen for iframe postMessage
@@ -380,22 +359,18 @@ export function ProjectPage() {
         .map(([k, v]) => `${k.replace(/([A-Z])/g, '-$1').toLowerCase()}: ${v}`)
         .join('; ');
 
-      const res = await fetch('http://localhost:8000/parse/html/element', {
+      const result = await apiJson('/parse/html/element', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           html: data.html,
           context_css: cssStr,
           project_id: id,
         }),
       });
-      if (!res.ok) throw new Error('Parse failed');
-      const result = await res.json();
       setSelectedElement(result.component);
       setElementFlutterCode(result.flutter_code);
       toast.success('Element parsed successfully');
-    } catch (err) {
-      console.error(err);
+    } catch {
       setElementFlutterCode('// Failed to generate code\n// Make sure the backend is running');
       toast.error('Failed to parse HTML element');
     } finally {
@@ -408,20 +383,14 @@ export function ProjectPage() {
     setFigmaImporting(true);
     setFigmaError('');
     try {
-      const res = await fetch('http://localhost:8000/parse/figma/url', {
+      const data = await apiJson('/parse/figma/url', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           figma_url: figmaUrl,
           access_token: figmaToken,
           project_id: id,
         }),
       });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || 'Figma import failed');
-      }
-      const data = await res.json();
       const figmaComps = data.components.map((c: any) => ({
         ...c,
         color: c.styles?.bg || '#7C6AF7',
@@ -449,15 +418,7 @@ export function ProjectPage() {
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const res = await fetch('http://localhost:8000/parse/figma/file', {
-        method: 'POST',
-        body: formData,
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || 'Fig file import failed');
-      }
-      const data = await res.json();
+      const data = await apiFormData('/parse/figma/file', formData);
       const figmaComps = data.components.map((c: any) => ({
         ...c,
         color: c.styles?.bg || '#7C6AF7',
@@ -492,11 +453,8 @@ export function ProjectPage() {
     const fetchCode = async () => {
       setLoadingCode(true);
       try {
-        const response = await fetch('http://localhost:8000/generate/flutter', {
+        const data = await apiJson('/generate/flutter', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
           body: JSON.stringify({
             component_tree: selected,
             options: {
@@ -505,14 +463,9 @@ export function ProjectPage() {
             },
           }),
         });
-        if (!response.ok) {
-          throw new Error('Failed to generate code');
-        }
-        const data = await response.json();
         setFlutterCode(data.code);
-      } catch (err) {
-        console.error(err);
-        toast.error('Failed to generate Flutter code', 'Backend may be unavailable');
+      } catch {
+        toast.error('Failed to generate Flutter code');
         setFlutterCode(`// Fallback generated Flutter Widget\nclass ${selected.name} extends StatelessWidget {\n  const ${selected.name}({super.key});\n  @override\n  Widget build(BuildContext context) {\n    return Container();\n  }\n}`);
       } finally {
         setLoadingCode(false);
@@ -570,15 +523,12 @@ export function ProjectPage() {
                     const formData = new FormData();
                     formData.append('file', f);
                     try {
-                      const res = await fetch('http://localhost:8000/parse/html', { method: 'POST', body: formData });
-                      if (res.ok) {
-                        const comps = await res.json();
-                        const mapped = comps.map((c: any) => ({ ...c, color: c.styles?.bg || '#7C6AF7', source: 'html' }));
-                        setComponentsList(prev => [...mapped, ...prev]);
-                        if (mapped.length > 0) setSelected(mapped[0]);
-                        toast.success(`Imported ${mapped.length} component(s) from HTML`);
-                      }
-                    } catch (err) {
+                      const comps = await apiFormData('/parse/html', formData);
+                      const mapped = (Array.isArray(comps) ? comps : []).map((c: any) => ({ ...c, color: c.styles?.bg || '#7C6AF7', source: 'html' }));
+                      setComponentsList(prev => [...mapped, ...prev]);
+                      if (mapped.length > 0) setSelected(mapped[0]);
+                      toast.success(`Imported ${mapped.length} component(s) from HTML`);
+                    } catch {
                       toast.error('HTML import failed');
                     }
                   }
@@ -945,23 +895,18 @@ export function ProjectPage() {
                     if (!saveName.trim()) return;
                     setSavingComponent(true);
                     try {
-                      const res = await fetch(`http://localhost:8000/api/projects/${id}/selected-components`, {
+                      const saved = await apiJson(`/api/projects/${id}/selected-components`, {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                           element_html: selectedElement?.content || '',
                           flutter_code: elementFlutterCode,
                           component_name: saveName.trim(),
                         }),
                       });
-                      if (res.ok) {
-                        const saved = await res.json();
-                        setSavedComponents(prev => [saved, ...prev]);
-                        setShowSaveDialog(false);
-                        toast.success(`Component "${saveName.trim()}" saved`);
-                      }
-                    } catch (err) {
-                      console.error(err);
+                      setSavedComponents(prev => [saved, ...prev]);
+                      setShowSaveDialog(false);
+                      toast.success(`Component "${saveName.trim()}" saved`);
+                    } catch {
                       toast.error('Failed to save component');
                     } finally {
                       setSavingComponent(false);

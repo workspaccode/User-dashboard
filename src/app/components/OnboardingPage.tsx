@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
 import { Code2, Palette, Users, FileText, Wand2, PenTool, Upload, Zap, ArrowRight, Check } from 'lucide-react';
+import { apiFormData } from '../lib/api';
 
 const ROLES = [
   { id: 'dev', icon: Code2, label: 'Flutter Developer', desc: 'I write Dart code and build Flutter apps', color: '#7C6AF7' },
@@ -69,20 +70,12 @@ export function OnboardingPage() {
     formData.append('color', '#7C6AF7');
 
     try {
-      const response = await fetch('http://localhost:8000/api/projects/import-html', {
-        method: 'POST',
-        body: formData,
-      });
-      if (!response.ok) {
-        throw new Error('Failed to import HTML file');
-      }
-      const data = await response.json();
+      const data = await apiFormData('/api/projects/import-html', formData);
       setCreatedProjectId(data.id);
       localStorage.setItem('brillance_project_id', data.id);
       localStorage.setItem('brillance_project_name', data.name);
-    } catch (err) {
-      console.error(err);
-      alert('Error parsing and importing HTML file. Make sure the backend is running on http://localhost:8000');
+    } catch {
+      alert('Error parsing and importing HTML file. Make sure the backend is running');
     } finally {
       setUploading(false);
     }

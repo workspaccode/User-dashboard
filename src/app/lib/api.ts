@@ -33,7 +33,7 @@ export async function apiJson<T = any>(path: string, options?: RequestInit): Pro
   return res.json();
 }
 
-export async function apiFormData(path: string, formData: FormData): Promise<Response> {
+export async function apiFormData<T = any>(path: string, formData: FormData): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
     body: formData,
@@ -47,5 +47,5 @@ export async function apiFormData(path: string, formData: FormData): Promise<Res
     throw new Error(detail);
   }
 
-  return res;
+  return res.json();
 }

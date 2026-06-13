@@ -5,6 +5,7 @@ import {
   Clock, Zap, TrendingUp, FileCode2, Palette, ArrowUpRight, Search, Trash2
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { api, apiJson } from '../lib/api';
 import { ProjectCardSkeleton } from './Skeletons';
 import { NoProjects } from './EmptyStates';
 
@@ -181,16 +182,9 @@ export function DashboardPage() {
   useEffect(() => {
     const loadProjects = async () => {
       try {
-        const response = await fetch('http://localhost:8000/api/projects');
-        if (!response.ok) throw new Error();
-        const data = await response.json();
-        // If empty on a fresh database, show fallback static list
-        if (data.length === 0) {
-          setProjects(PROJECTS);
-        } else {
-          setProjects(data);
-        }
-      } catch (err) {
+        const data = await apiJson<any[]>('/api/projects');
+        setProjects(data.length === 0 ? PROJECTS : data);
+      } catch {
         console.warn('FastAPI backend connection failed. Falling back to static list.');
         setProjects(PROJECTS);
       } finally {
@@ -209,40 +203,24 @@ export function DashboardPage() {
     const color = colors[Math.floor(Math.random() * colors.length)];
 
     try {
-      const response = await fetch('http://localhost:8000/api/projects', {
+      const newProj = await apiJson('/api/projects', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, description: desc, color }),
       });
-      if (response.ok) {
-        const newProj = await response.json();
-        setProjects(prev => [newProj, ...prev]);
-        toast.success(`Project "${name}" created`);
-      } else {
-        toast.error('Failed to create project');
-      }
-    } catch (err) {
-      console.error(err);
-      toast.error('Error creating project', 'Ensure backend is running');
+      setProjects(prev => [newProj, ...prev]);
+      toast.success(`Project "${name}" created`);
+    } catch {
+      toast.error('Error creating project');
     }
   };
 
   const handleDelete = async (id: string) => {
     try {
-      const response = await fetch(`http://localhost:8000/api/projects/${id}`, {
-        method: 'DELETE',
-      });
-      if (response.ok) {
-        setProjects(prev => prev.filter(p => p.id !== id));
-        toast.success('Project deleted');
-      } else {
-        setProjects(prev => prev.filter(p => p.id !== id));
-        toast.success('Project deleted (local)');
-      }
-    } catch (err) {
-      console.error(err);
+      await api(`/api/projects/${id}`, { method: 'DELETE' });
       setProjects(prev => prev.filter(p => p.id !== id));
-      toast.success('Project deleted (local)');
+      toast.success('Project deleted');
+    } catch {
+      setProjects(prev => prev.filter(p => p.id !== id));
     }
   };
 

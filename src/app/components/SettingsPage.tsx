@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router';
 import { toast } from 'sonner';
+import { api, apiJson } from '../lib/api';
 import {
   User, Key, CreditCard, Copy, Check, Plus, Trash2,
   Eye, EyeOff, BarChart3, Shield, Crown, Zap, LogOut
@@ -49,8 +50,7 @@ export function SettingsPage() {
   const loadKeys = async () => {
     setLoadingKeys(true);
     try {
-      const res = await fetch(`http://localhost:8000/api/keys/${USER_ID}`);
-      if (res.ok) setApiKeys(await res.json());
+      setApiKeys(await apiJson(`/api/keys/${USER_ID}`));
     } catch { /* ignore */ }
     setLoadingKeys(false);
   };
@@ -58,8 +58,7 @@ export function SettingsPage() {
   const loadUsage = async () => {
     setLoadingUsage(true);
     try {
-      const res = await fetch(`http://localhost:8000/api/usage/${USER_ID}`);
-      if (res.ok) setUsage(await res.json());
+      setUsage(await apiJson(`/api/usage/${USER_ID}`));
     } catch { /* ignore */ }
     setLoadingUsage(false);
   };
@@ -81,32 +80,24 @@ export function SettingsPage() {
     setCreatingKey(true);
     setNewKeyValue(null);
     try {
-      const res = await fetch('http://localhost:8000/api/keys', {
+      const data = await apiJson('/api/keys', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user_id: USER_ID }),
       });
-      if (res.ok) {
-        const data = await res.json();
-        setNewKeyValue(data.full_key);
-        toast.success('API key created — copy it now, you won\'t see it again');
-        loadKeys();
-      } else {
-        toast.error('Failed to create API key');
-      }
+      setNewKeyValue(data.full_key);
+      toast.success('API key created — copy it now, you won\'t see it again');
+      loadKeys();
     } catch {
-      toast.error('Failed to create API key. Check backend connection.');
+      toast.error('Failed to create API key');
     }
     setCreatingKey(false);
   };
 
   const deleteKey = async (keyId: string) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/keys/${keyId}?user_id=${USER_ID}`, { method: 'DELETE' });
-      if (res.ok) {
-        setApiKeys(prev => prev.filter(k => k.id !== keyId));
-        toast.success('API key deleted');
-      }
+      await api(`/api/keys/${keyId}?user_id=${USER_ID}`, { method: 'DELETE' });
+      setApiKeys(prev => prev.filter(k => k.id !== keyId));
+      toast.success('API key deleted');
     } catch {
       toast.error('Failed to delete API key');
     }
@@ -115,9 +106,8 @@ export function SettingsPage() {
   const upgradeToPro = async () => {
     setUpgrading(true);
     try {
-      const res = await fetch('http://localhost:8000/stripe/create-checkout', {
+      const data = await apiJson('/stripe/create-checkout', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           user_id: USER_ID,
           plan: 'pro',
@@ -125,14 +115,8 @@ export function SettingsPage() {
           cancel_url: `${window.location.origin}/settings?tab=billing`,
         }),
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.checkout_url) {
-          window.location.href = data.checkout_url;
-        }
-      } else {
-        const err = await res.json().catch(() => ({}));
-        toast.error(err.detail || 'Failed to start checkout');
+      if (data.checkout_url) {
+        window.location.href = data.checkout_url;
       }
     } catch {
       toast.error('Checkout failed. Make sure Stripe is configured.');
@@ -142,15 +126,11 @@ export function SettingsPage() {
 
   const openBillingPortal = async () => {
     try {
-      const res = await fetch('http://localhost:8000/stripe/billing-portal', {
+      const data = await apiJson('/stripe/billing-portal', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user_id: USER_ID }),
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.portal_url) window.location.href = data.portal_url;
-      }
+      if (data.portal_url) window.location.href = data.portal_url;
     } catch {
       toast.error('Failed to open billing portal');
     }
@@ -159,12 +139,8 @@ export function SettingsPage() {
   // Load plan + show success toast after upgrade redirect
   useEffect(() => {
     setLoadingPlan(true);
-    fetch(`http://localhost:8000/api/plan/${USER_ID}`)
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (data) { setPlan(data.plan); }
-        setLoadingPlan(false);
-      })
+    apiJson(`/api/plan/${USER_ID}`)
+      .then(data => { setPlan(data.plan); setLoadingPlan(false); })
       .catch(() => setLoadingPlan(false));
 
     const params = new URLSearchParams(window.location.search);

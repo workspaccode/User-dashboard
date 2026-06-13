@@ -5,6 +5,7 @@ import {
   Palette, Type, Sparkles, RefreshCw, ChevronRight,
   Loader2, AlignRight, Save, Clock, Trash2
 } from 'lucide-react';
+import { api, apiJson } from '../lib/api';
 
 const STYLE_PRESETS = [
   { id: 'minimal', label: 'Minimal', desc: 'Clean, whitespace-first', color: '#e8e8f0' },
@@ -42,8 +43,7 @@ export function DesignSystemPage() {
   const [enhancements, setEnhancements] = useState<any>(null);
 
   useEffect(() => {
-    fetch('http://localhost:8000/api/design-systems')
-      .then(r => r.ok ? r.json() : [])
+    apiJson('/api/design-systems')
       .then(data => setSavedSystems(data))
       .catch(() => {});
   }, []);
@@ -52,9 +52,8 @@ export function DesignSystemPage() {
     setGenerating(true);
     setError('');
     try {
-      const res = await fetch('http://localhost:8000/generate/design-system', {
+      const data = await apiJson('/generate/design-system', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           brand_name: brand || 'Brand',
           primary_color: primaryColor,
@@ -62,12 +61,10 @@ export function DesignSystemPage() {
           dark_mode: darkMode,
         }),
       });
-      if (!res.ok) throw new Error('Generation failed');
-      const data = await res.json();
       setTokens(data);
       setStep(3);
-    } catch (err) {
-      setError('Failed to generate. Make sure the backend is running on http://localhost:8000');
+    } catch {
+      setError('Failed to generate. Make sure the backend is running');
     } finally {
       setGenerating(false);
     }
@@ -77,13 +74,10 @@ export function DesignSystemPage() {
     if (!tokens) return;
     setExporting(fmt.id);
     try {
-      const res = await fetch(`http://localhost:8000${fmt.endpoint}`, {
+      const data = await apiJson(`${fmt.endpoint}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tokens }),
       });
-      if (!res.ok) throw new Error('Export failed');
-      const data = await res.json();
       const blob = new Blob([data.code], { type: 'text/plain' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -108,9 +102,8 @@ export function DesignSystemPage() {
     if (!tokens) return;
     setSaving(true);
     try {
-      const res = await fetch('http://localhost:8000/api/design-systems', {
+      const saved = await apiJson('/api/design-systems', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: brand,
           primary_color: primaryColor,
@@ -118,10 +111,7 @@ export function DesignSystemPage() {
           tokens: tokens,
         }),
       });
-      if (res.ok) {
-        const saved = await res.json();
-        setSavedSystems(prev => [saved, ...prev]);
-      }
+      setSavedSystems(prev => [saved, ...prev]);
     } catch (err) {
       console.error(err);
     } finally {
@@ -133,9 +123,8 @@ export function DesignSystemPage() {
     if (!tokens) return;
     setEnhancing(true);
     try {
-      const res = await fetch('http://localhost:8000/generate/design-system/enhance', {
+      const data = await apiJson('/generate/design-system/enhance', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           tokens,
           brand_name: brand,
@@ -143,10 +132,7 @@ export function DesignSystemPage() {
           preset: stylePreset,
         }),
       });
-      if (res.ok) {
-        const data = await res.json();
-        setEnhancements(data.enhancements);
-      }
+      setEnhancements(data.enhancements);
     } catch (err) {
       console.error(err);
     } finally {
