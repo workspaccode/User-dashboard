@@ -296,7 +296,7 @@ export function ProjectPage() {
         throw new Error('Fallback to static components');
       } catch {
         console.warn('Backend fetch failed, using fallback component lists.');
-        toast.error('Could not load project', 'Using fallback data');
+        toast.error('Could not load project', { description: 'Using fallback data' });
         
         // Try reading local storage first
         const stored = localStorage.getItem('brillance_parsed_components');
@@ -405,7 +405,7 @@ export function ProjectPage() {
       toast.success(`Imported ${figmaComps.length} component(s) from Figma`);
     } catch (err: any) {
       setFigmaError(err.message || 'Figma import failed');
-      toast.error('Figma import failed', err.message);
+      toast.error('Figma import failed', { description: err.message });
     } finally {
       setFigmaImporting(false);
     }
@@ -430,7 +430,7 @@ export function ProjectPage() {
       toast.success(`Imported ${figmaComps.length} component(s) from .fig file`);
     } catch (err: any) {
       setFigmaError(err.message || 'Fig file import failed');
-      toast.error('.fig import failed', err.message);
+      toast.error('.fig import failed', { description: err.message });
     } finally {
       setFigmaFileUploading(false);
     }
