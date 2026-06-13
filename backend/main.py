@@ -1,8 +1,10 @@
 import os
 import re
 import json
+from uuid import uuid4
 from typing import Dict, Any, List, Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from bs4 import BeautifulSoup
@@ -60,6 +62,11 @@ class ProjectCreate(BaseModel):
     description: Optional[str] = ""
     color: Optional[str] = "#7C6AF7"
     user_id: Optional[str] = None
+
+class ParseElementRequest(BaseModel):
+    html: str
+    context_css: Optional[str] = ""
+    project_id: Optional[str] = None
 
 
 # Helper to extract style attributes from raw inline style strings
@@ -209,6 +216,75 @@ def extract_components_from_html(html_content: str) -> List[ComponentNode]:
 
     return components
 
+
+def extract_single_element(html_snippet: str, context_css: str = "") -> Optional[ComponentNode]:
+    soup = BeautifulSoup(html_snippet, "html.parser")
+    el = soup.find()
+    if not el:
+        return None
+
+    css = parse_inline_styles(context_css)
+    tag = el.name.lower()
+
+    bg = css.get("background-color") or css.get("background") or "#16161f"
+    color = css.get("color") or "#e8e8f0"
+    radius_match = re.search(r'(\d+(?:\.\d+)?)', css.get("border-radius", "0"))
+    radius = int(float(radius_match.group(1))) if radius_match else 0
+    font_size_match = re.search(r'(\d+(?:\.\d+)?)', css.get("font-size", "14"))
+    font_size = int(float(font_size_match.group(1))) if font_size_match else 14
+
+    padding_raw = css.get("padding", "0")
+    parts = [int(float(v)) for v in re.findall(r'\d+(?:\.\d+)?', padding_raw)]
+    padding = parts if parts else [12, 16]
+    if len(padding) == 1:
+        padding = [padding[0], padding[0]]
+
+    text = el.get_text(strip=True) or el.get("value") or el.get("placeholder") or "Element"
+
+    if tag == "button" or (tag == "input" and el.get("type") in ["button", "submit", "reset"]):
+        type_ = "button"
+        name = el.get("id") or f"Button_{uuid4().hex[:6]}"
+        bounds = Bounds(w=180.0, h=44.0)
+        variants = ["default", "hover", "disabled"]
+    elif tag == "input":
+        type_ = "input"
+        name = el.get("id") or f"Input_{uuid4().hex[:6]}"
+        bounds = Bounds(w=240.0, h=48.0)
+        variants = ["default", "focused", "error"]
+    elif tag in ("nav", "header"):
+        type_ = "navbar"
+        name = el.get("id") or f"NavBar_{uuid4().hex[:6]}"
+        bounds = Bounds(w=320.0, h=56.0)
+        bg = bg if bg != "#16161f" else "#0e0e16"
+        variants = ["default", "sticky"]
+    elif re.search(r"card|container|box|item|wrapper", " ".join(el.get("class") or []), re.I):
+        type_ = "card"
+        name = el.get("id") or f"Card_{uuid4().hex[:6]}"
+        bounds = Bounds(w=280.0, h=180.0)
+        variants = ["default", "elevated", "outlined"]
+    else:
+        type_ = "custom"
+        name = el.get("id") or f"Section_{uuid4().hex[:6]}"
+        bounds = Bounds(w=300.0, h=120.0)
+        variants = ["default"]
+
+    return ComponentNode(
+        id=f"{type_}-{uuid4().hex[:8]}",
+        name=name,
+        type=type_,
+        bounds=bounds,
+        styles=Styles(
+            bg=bg,
+            radius=radius,
+            padding=padding,
+            color=color,
+            fontSize=font_size,
+        ),
+        content=text[:50],
+        variants=variants,
+    )
+
+
 # Parse HTML and extract ComponentTree (Stateless API)
 @app.post("/parse/html")
 async def parse_html(file: UploadFile = File(...)):
@@ -220,6 +296,25 @@ async def parse_html(file: UploadFile = File(...)):
 
     components = extract_components_from_html(html_content)
     return [c.model_dump() for c in components]
+
+
+@app.post("/parse/html/element")
+async def parse_html_element(req: ParseElementRequest):
+    component = extract_single_element(req.html, req.context_css)
+    if not component:
+        raise HTTPException(status_code=400, detail="Could not parse any element from the provided HTML")
+
+    flutter_result = compile_tree_to_flutter(
+        tree=component.model_dump(),
+        rtl=False,
+        theme="material3"
+    )
+
+    return {
+        "component": component.model_dump(),
+        "flutter_code": flutter_result
+    }
+
 
 # --- Database Persistence Routes ---
 
@@ -257,6 +352,30 @@ async def delete_project(project_id: str):
 async def get_project_components(project_id: str):
     return db.get_project_components(project_id)
 
+@app.post("/api/projects/{project_id}/selected-components")
+async def save_selected_component(project_id: str, req: dict):
+    try:
+        result = db.save_selected_component(
+            project_id=project_id,
+            element_html=req.get("element_html", ""),
+            flutter_code=req.get("flutter_code", ""),
+            component_name=req.get("component_name")
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/projects/{project_id}/selected-components")
+async def get_selected_components(project_id: str):
+    return db.get_selected_components(project_id)
+
+@app.delete("/api/selected-components/{comp_id}")
+async def delete_selected_component(comp_id: str):
+    success = db.delete_selected_component(comp_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Component not found")
+    return {"success": True}
+
 @app.post("/api/projects/{project_id}/components")
 async def save_project_components(project_id: str, components: List[Dict[str, Any]]):
     try:
@@ -291,7 +410,8 @@ async def import_html(
             name=p_name,
             description=description or f"Imported components from {file.filename}",
             color=color,
-            user_id=user_id
+            user_id=user_id,
+            raw_html=html_content
         )
         
         # Save Components to project
@@ -303,6 +423,142 @@ async def import_html(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.post("/api/projects/{project_id}/raw-html")
+async def save_raw_html(project_id: str, file: UploadFile = File(...)):
+    try:
+        contents = await file.read()
+        raw_html = contents.decode("utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
+    
+    success = db.update_project_raw_html(project_id, raw_html)
+    if not success:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {"success": True, "project_id": project_id}
+
+
+@app.get("/preview/{project_id}")
+async def preview_html(project_id: str):
+    raw = db.get_project_raw_html(project_id)
+    if not raw:
+        raise HTTPException(status_code=404, detail="No HTML found for this project")
+    
+    injection_script = """
+<script>
+(function() {
+  let selectedEl = null;
+  
+  document.addEventListener('click', function(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    const el = e.target;
+    const styles = window.getComputedStyle(el);
+    
+    // Remove previous highlight
+    if (selectedEl) {
+      selectedEl.style.outline = selectedEl._brillancePrevOutline || 'none';
+    }
+    
+    // Save current outline and highlight
+    selectedEl = el;
+    el._brillancePrevOutline = el.style.outline;
+    el.style.outline = '2px solid #7C6AF7';
+    el.style.outlineOffset = '2px';
+    
+    window.parent.postMessage({
+      type: 'ELEMENT_SELECTED',
+      html: el.outerHTML,
+      tagName: el.tagName,
+      computedStyles: {
+        color: styles.color,
+        backgroundColor: styles.backgroundColor,
+        fontSize: styles.fontSize,
+        borderRadius: styles.borderRadius,
+        padding: styles.padding,
+        fontWeight: styles.fontWeight,
+      },
+      bounds: {
+        w: el.offsetWidth,
+        h: el.offsetHeight,
+      }
+    }, '*');
+  }, true);
+  
+  // Also add hover preview cursor
+  document.addEventListener('mouseover', function(e) {
+    if (e.target !== selectedEl) {
+      e.target.style.cursor = 'pointer';
+    }
+  }, true);
+})();
+</script>
+"""
+    
+    modified = raw.replace("</body>", f"{injection_script}</body>") if "</body>" in raw else raw + injection_script
+    return HTMLResponse(content=modified)
+
+
+# Temporary HTML storage for CORS-safe iframe previews
+_temp_html_storage: Dict[str, str] = {}
+
+@app.post("/serve/html")
+async def serve_temp_html(file: UploadFile = File(...)):
+    try:
+        content = await file.read()
+        html_content = content.decode("utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
+    temp_id = uuid4().hex
+    _temp_html_storage[temp_id] = html_content
+    return {"preview_url": f"/preview/temp/{temp_id}", "temp_id": temp_id}
+
+
+@app.get("/preview/temp/{temp_id}")
+async def get_temp_preview(temp_id: str):
+    html_content = _temp_html_storage.get(temp_id)
+    if not html_content:
+        raise HTTPException(status_code=404, detail="Temporary HTML not found or expired")
+
+    injection_script = """
+<script>
+(function() {
+  let selectedEl = null;
+  document.addEventListener('click', function(e) {
+    e.preventDefault(); e.stopPropagation();
+    const el = e.target;
+    const styles = window.getComputedStyle(el);
+    if (selectedEl) {
+      selectedEl.style.outline = selectedEl._brillancePrevOutline || 'none';
+    }
+    selectedEl = el;
+    el._brillancePrevOutline = el.style.outline;
+    el.style.outline = '2px solid #7C6AF7';
+    el.style.outlineOffset = '2px';
+    window.parent.postMessage({
+      type: 'ELEMENT_SELECTED',
+      html: el.outerHTML,
+      tagName: el.tagName,
+      computedStyles: {
+        color: styles.color,
+        backgroundColor: styles.backgroundColor,
+        fontSize: styles.fontSize,
+        borderRadius: styles.borderRadius,
+        padding: styles.padding,
+        fontWeight: styles.fontWeight,
+      },
+      bounds: { w: el.offsetWidth, h: el.offsetHeight }
+    }, '*');
+  }, true);
+  document.addEventListener('mouseover', function(e) {
+    if (e.target !== selectedEl) e.target.style.cursor = 'pointer';
+  }, true);
+})();
+</script>
+"""
+    modified = html_content.replace("</body>", f"{injection_script}</body>") if "</body>" in html_content else html_content + injection_script
+    return HTMLResponse(content=modified)
 
 
 # Generate Flutter widget code from ComponentTree

@@ -48,6 +48,12 @@ class DatabaseManager:
         )
         """)
         
+        # Migration: add raw_html column if missing
+        try:
+            cursor.execute("ALTER TABLE projects ADD COLUMN raw_html TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+        
         # Create components table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS components (
@@ -59,6 +65,25 @@ class DatabaseManager:
             bounds TEXT, -- JSON String
             content TEXT,
             variants TEXT, -- JSON String
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+        )
+        """)
+        conn.commit()
+        conn.close()
+        
+        self._init_selected_components()
+
+    def _init_selected_components(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS selected_components (
+            id TEXT PRIMARY KEY,
+            project_id TEXT,
+            element_html TEXT NOT NULL,
+            flutter_code TEXT,
+            component_name TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
         )
@@ -136,7 +161,7 @@ class DatabaseManager:
                 print(f"SQLite GET project exception: {str(e)}")
                 return None
 
-    def create_project(self, name: str, description: str = "", color: str = "#7C6AF7", user_id: str = None) -> Dict[str, Any]:
+    def create_project(self, name: str, description: str = "", color: str = "#7C6AF7", user_id: str = None, raw_html: str = None) -> Dict[str, Any]:
         project_id = str(uuid.uuid4())
         project_data = {
             "id": project_id,
@@ -144,6 +169,7 @@ class DatabaseManager:
             "description": description,
             "color": color,
             "components_count": 0,
+            "raw_html": raw_html,
             "user_id": user_id
         }
         
@@ -165,9 +191,9 @@ class DatabaseManager:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
                 cursor.execute("""
-                INSERT INTO projects (id, name, description, color, components_count, user_id)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """, (project_id, name, description, color, 0, user_id))
+                    INSERT INTO projects (id, name, description, color, components_count, raw_html, user_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (project_id, name, description, color, 0, raw_html, user_id))
                 conn.commit()
                 conn.close()
                 project_data["components"] = 0
@@ -197,6 +223,129 @@ class DatabaseManager:
                 return True
             except Exception as e:
                 print(f"SQLite DELETE project exception: {str(e)}")
+                return False
+
+    def update_project_raw_html(self, project_id: str, raw_html: str) -> bool:
+        if self.use_supabase:
+            try:
+                url = f"{self.base_url}/projects?id=eq.{project_id}"
+                res = requests.patch(url, headers=self.headers, json={"raw_html": raw_html}, timeout=10)
+                return res.status_code in [200, 204]
+            except Exception as e:
+                print(f"Supabase UPDATE raw_html exception: {str(e)}")
+                return False
+        else:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute("UPDATE projects SET raw_html = ? WHERE id = ?", (raw_html, project_id))
+                conn.commit()
+                conn.close()
+                return True
+            except Exception as e:
+                print(f"SQLite UPDATE raw_html exception: {str(e)}")
+                return False
+
+    def get_project_raw_html(self, project_id: str) -> Optional[str]:
+        if self.use_supabase:
+            try:
+                url = f"{self.base_url}/projects?id=eq.{project_id}&select=raw_html"
+                res = requests.get(url, headers=self.headers, timeout=10)
+                if res.status_code == 200 and res.json():
+                    return res.json()[0].get("raw_html")
+                return None
+            except Exception as e:
+                print(f"Supabase GET raw_html exception: {str(e)}")
+                return None
+        else:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT raw_html FROM projects WHERE id = ?", (project_id,))
+                row = cursor.fetchone()
+                conn.close()
+                return row[0] if row else None
+            except Exception as e:
+                print(f"SQLite GET raw_html exception: {str(e)}")
+                return None
+
+    def save_selected_component(self, project_id: str, element_html: str, flutter_code: str, component_name: str = None) -> Dict[str, Any]:
+        comp_id = str(uuid.uuid4())
+        record = {
+            "id": comp_id,
+            "project_id": project_id,
+            "element_html": element_html,
+            "flutter_code": flutter_code,
+            "component_name": component_name or f"Component_{comp_id[:8]}",
+        }
+        if self.use_supabase:
+            try:
+                url = f"{self.base_url}/selected_components"
+                res = requests.post(url, headers=self.headers, json=record, timeout=10)
+                if res.status_code in [200, 201]:
+                    return res.json()[0] if res.json() else record
+                raise Exception(f"Supabase POST error: {res.status_code}")
+            except Exception as e:
+                print(f"Supabase save selected component exception: {str(e)}")
+                raise e
+        else:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO selected_components (id, project_id, element_html, flutter_code, component_name)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (comp_id, project_id, element_html, flutter_code, record["component_name"]))
+                conn.commit()
+                conn.close()
+                return record
+            except Exception as e:
+                print(f"SQLite save selected component exception: {str(e)}")
+                raise e
+
+    def get_selected_components(self, project_id: str) -> List[Dict[str, Any]]:
+        if self.use_supabase:
+            try:
+                url = f"{self.base_url}/selected_components?project_id=eq.{project_id}&select=*&order=created_at.desc"
+                res = requests.get(url, headers=self.headers, timeout=10)
+                if res.status_code == 200:
+                    return res.json()
+                return []
+            except Exception as e:
+                print(f"Supabase GET selected components exception: {str(e)}")
+                return []
+        else:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM selected_components WHERE project_id = ? ORDER BY created_at DESC", (project_id,))
+                rows = cursor.fetchall()
+                conn.close()
+                return [dict(r) for r in rows]
+            except Exception as e:
+                print(f"SQLite GET selected components exception: {str(e)}")
+                return []
+
+    def delete_selected_component(self, comp_id: str) -> bool:
+        if self.use_supabase:
+            try:
+                url = f"{self.base_url}/selected_components?id=eq.{comp_id}"
+                res = requests.delete(url, headers=self.headers, timeout=10)
+                return res.status_code in [200, 204]
+            except Exception as e:
+                print(f"Supabase DELETE selected component exception: {str(e)}")
+                return False
+        else:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM selected_components WHERE id = ?", (comp_id,))
+                conn.commit()
+                conn.close()
+                return True
+            except Exception as e:
+                print(f"SQLite DELETE selected component exception: {str(e)}")
                 return False
 
     def get_project_components(self, project_id: str) -> List[Dict[str, Any]]:

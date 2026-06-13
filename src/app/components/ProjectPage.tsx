@@ -1,9 +1,10 @@
 import { useNavigate, useParams } from 'react-router';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Search, Filter, Copy, Check, Moon, Sun, AlignRight,
   Layers, Code2, PenTool, Box, ChevronRight, Download,
-  ExternalLink, Eye, Layout, Type, Square, Circle, Hash
+  ExternalLink, Eye, Layout, Type, Square, Circle, Hash,
+  Globe, MousePointer, Loader2, PanelRightClose, PanelRightOpen
 } from 'lucide-react';
 
 // Fallback initial list
@@ -218,6 +219,18 @@ export function ProjectPage() {
   const [flutterCode, setFlutterCode] = useState('');
   const [loadingCode, setLoadingCode] = useState(false);
   const [projectName, setProjectName] = useState('Noon E-Commerce');
+  
+  // HTML Preview states
+  const [htmlPreviewMode, setHtmlPreviewMode] = useState(false);
+  const [rawHtml, setRawHtml] = useState<string | null>(null);
+  const [selectedElement, setSelectedElement] = useState<any>(null);
+  const [elementFlutterCode, setElementFlutterCode] = useState('');
+  const [elementLoading, setElementLoading] = useState(false);
+  const [savedComponents, setSavedComponents] = useState<any[]>([]);
+  const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const [saveName, setSaveName] = useState('');
+  const [savingComponent, setSavingComponent] = useState(false);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
 
   // Load components and metadata dynamically
   useEffect(() => {
@@ -290,6 +303,65 @@ export function ProjectPage() {
 
     loadProjectAndComponents();
   }, [id]);
+
+  // Fetch raw HTML for preview
+  useEffect(() => {
+    if (!id) return;
+    fetch(`http://localhost:8000/api/projects/${id}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.raw_html) setRawHtml(data.raw_html);
+      })
+      .catch(() => {});
+  }, [id]);
+
+  // Fetch saved components
+  useEffect(() => {
+    if (!id) return;
+    fetch(`http://localhost:8000/api/projects/${id}/selected-components`)
+      .then(r => r.ok ? r.json() : [])
+      .then(data => setSavedComponents(data))
+      .catch(() => {});
+  }, [id]);
+
+  // Listen for iframe postMessage
+  const fetchElementCode = useCallback(async (data: any) => {
+    setElementLoading(true);
+    try {
+      const cssStr = Object.entries(data.computedStyles || {})
+        .map(([k, v]) => `${k.replace(/([A-Z])/g, '-$1').toLowerCase()}: ${v}`)
+        .join('; ');
+
+      const res = await fetch('http://localhost:8000/parse/html/element', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          html: data.html,
+          context_css: cssStr,
+          project_id: id,
+        }),
+      });
+      if (!res.ok) throw new Error('Parse failed');
+      const result = await res.json();
+      setSelectedElement(result.component);
+      setElementFlutterCode(result.flutter_code);
+    } catch (err) {
+      console.error(err);
+      setElementFlutterCode('// Failed to generate code\n// Make sure the backend is running');
+    } finally {
+      setElementLoading(false);
+    }
+  }, [id]);
+
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      if (event.data?.type === 'ELEMENT_SELECTED') {
+        fetchElementCode(event.data);
+      }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, [fetchElementCode]);
 
   // Fetch Flutter code dynamically when selected component changes
   useEffect(() => {
@@ -394,6 +466,26 @@ export function ProjectPage() {
           ))}
         </div>
 
+        {/* Saved components */}
+        {htmlPreviewMode && savedComponents.length > 0 && (
+          <div style={{ padding: '8px 8px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+            <div style={{ fontSize: 11, color: '#3a3a52', textTransform: 'uppercase', letterSpacing: '0.08em', padding: '0 10px', marginBottom: 6 }}>
+              Saved Components ({savedComponents.length})
+            </div>
+            {savedComponents.map(sc => (
+              <div key={sc.id} style={{
+                display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px',
+                borderRadius: 6, fontSize: 12, color: '#c8c8e0',
+              }}>
+                <Check size={11} color="#34d399" />
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {sc.component_name}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Component list */}
         <div style={{ flex: 1, overflow: 'auto', padding: '8px 8px' }}>
           {filtered.map(comp => (
@@ -449,12 +541,30 @@ export function ProjectPage() {
           )}
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
             <button
-              onClick={() => setDarkPreview(d => !d)}
-              style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)', color: '#6b6b8a', padding: '5px 12px', borderRadius: 7, cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}
+              onClick={() => {
+                setHtmlPreviewMode(m => !m);
+                setSelectedElement(null);
+                setElementFlutterCode('');
+              }}
+              style={{
+                background: htmlPreviewMode ? 'rgba(124,106,247,0.15)' : 'rgba(255,255,255,0.05)',
+                border: `1px solid ${htmlPreviewMode ? 'rgba(124,106,247,0.3)' : 'rgba(255,255,255,0.08)'}`,
+                color: htmlPreviewMode ? '#a78bfa' : '#6b6b8a',
+                padding: '5px 12px', borderRadius: 7, cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6
+              }}
             >
-              {darkPreview ? <Moon size={13} /> : <Sun size={13} />}
-              {darkPreview ? 'Dark' : 'Light'}
+              <MousePointer size={13} />
+              {htmlPreviewMode ? 'Interactive Mode' : 'HTML Preview'}
             </button>
+            {!htmlPreviewMode && (
+              <button
+                onClick={() => setDarkPreview(d => !d)}
+                style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)', color: '#6b6b8a', padding: '5px 12px', borderRadius: 7, cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}
+              >
+                {darkPreview ? <Moon size={13} /> : <Sun size={13} />}
+                {darkPreview ? 'Dark' : 'Light'}
+              </button>
+            )}
             <button
               onClick={() => navigate(`/project/${id}/canvas`)}
               style={{ background: 'rgba(124,106,247,0.1)', border: '1px solid rgba(124,106,247,0.2)', color: '#a78bfa', padding: '5px 12px', borderRadius: 7, cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}
@@ -467,21 +577,203 @@ export function ProjectPage() {
 
         {/* Preview area */}
         <div style={{
-          flex: '0 0 auto',
-          background: darkPreview ? '#0e0e16' : '#f5f5f7',
+          flex: htmlPreviewMode ? '1' : '0 0 auto',
+          background: htmlPreviewMode ? '#fff' : (darkPreview ? '#0e0e16' : '#f5f5f7'),
           borderBottom: '1px solid rgba(255,255,255,0.05)',
           display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: 40,
-          minHeight: 200,
+          alignItems: htmlPreviewMode ? 'stretch' : 'center',
+          justifyContent: htmlPreviewMode ? 'stretch' : 'center',
+          padding: htmlPreviewMode ? 0 : 40,
+          minHeight: htmlPreviewMode ? 0 : 200,
+          position: 'relative',
+          overflow: 'hidden',
         }}>
-          {selected ? (
-            <DynamicComponentPreview component={selected} darkTheme={darkPreview} />
+          {htmlPreviewMode ? (
+            rawHtml ? (
+              <iframe
+                ref={iframeRef}
+                src={`http://localhost:8000/preview/${id}`}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  border: 'none',
+                  background: '#fff',
+                }}
+                title="HTML Preview"
+                sandbox="allow-scripts allow-same-origin"
+              />
+            ) : (
+              <div style={{ color: '#6b6b8a', fontSize: 14, alignSelf: 'center', margin: 'auto' }}>
+                No HTML content available. Upload an HTML file first.
+              </div>
+            )
           ) : (
-            <div style={{ color: '#6b6b8a', fontSize: 14 }}>No component selected</div>
+            selected ? (
+              <DynamicComponentPreview component={selected} darkTheme={darkPreview} />
+            ) : (
+              <div style={{ color: '#6b6b8a', fontSize: 14 }}>No component selected</div>
+            )
           )}
         </div>
+
+        {/* Element info bar (shown in HTML Preview mode when element selected) */}
+        {htmlPreviewMode && selectedElement && (
+          <div style={{
+            padding: '8px 20px',
+            background: 'rgba(124,106,247,0.08)',
+            borderBottom: '1px solid rgba(124,106,247,0.15)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            fontSize: 13,
+          }}>
+            <MousePointer size={14} color="#a78bfa" />
+            <span style={{ color: '#a78bfa', fontWeight: 600 }}>{selectedElement.name}</span>
+            <span style={{ color: '#6b6b8a' }}>·</span>
+            <span style={{ color: '#6b6b8a' }}>{selectedElement.type}</span>
+            {elementLoading && (
+              <>
+                <span style={{ color: '#6b6b8a' }}>·</span>
+                <Loader2 size={14} color="#a78bfa" style={{ animation: 'spin 1s linear infinite' }} />
+                <span style={{ color: '#6b6b8a' }}>Generating Flutter code...</span>
+              </>
+            )}
+            {!elementLoading && elementFlutterCode && (
+              <>
+                <div style={{ flex: 1 }} />
+                <button
+                  onClick={() => {
+                    setSaveName(selectedElement.name || 'CustomComponent');
+                    setShowSaveDialog(true);
+                  }}
+                  style={{
+                    background: 'rgba(16,185,129,0.1)',
+                    border: '1px solid rgba(16,185,129,0.2)',
+                    color: '#34d399',
+                    padding: '4px 12px',
+                    borderRadius: 6,
+                    cursor: 'pointer',
+                    fontSize: 12,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 5,
+                  }}
+                >
+                  <Check size={12} />
+                  Save Component
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Save dialog */}
+        {showSaveDialog && (
+          <div style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.6)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 100,
+          }}
+            onClick={() => setShowSaveDialog(false)}
+          >
+            <div style={{
+              background: '#16161f',
+              borderRadius: 12,
+              border: '1px solid rgba(255,255,255,0.08)',
+              padding: 24,
+              width: 380,
+              maxWidth: '90vw',
+            }}
+              onClick={e => e.stopPropagation()}
+            >
+              <div style={{ fontSize: 16, fontWeight: 600, color: '#e8e8f0', marginBottom: 4 }}>Save Component</div>
+              <div style={{ fontSize: 13, color: '#6b6b8a', marginBottom: 16 }}>
+                Give your component a name to save it to the project.
+              </div>
+              <input
+                value={saveName}
+                onChange={e => setSaveName(e.target.value)}
+                placeholder="Component name"
+                style={{
+                  width: '100%',
+                  background: '#1a1a28',
+                  border: '1px solid rgba(255,255,255,0.07)',
+                  borderRadius: 8,
+                  padding: '10px 12px',
+                  color: '#e8e8f0',
+                  fontSize: 14,
+                  outline: 'none',
+                  boxSizing: 'border-box',
+                  marginBottom: 16,
+                }}
+                autoFocus
+              />
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+                <button
+                  onClick={() => setShowSaveDialog(false)}
+                  style={{
+                    background: 'rgba(255,255,255,0.05)',
+                    border: '1px solid rgba(255,255,255,0.07)',
+                    color: '#6b6b8a',
+                    padding: '8px 16px',
+                    borderRadius: 8,
+                    cursor: 'pointer',
+                    fontSize: 13,
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={async () => {
+                    if (!saveName.trim()) return;
+                    setSavingComponent(true);
+                    try {
+                      const res = await fetch(`http://localhost:8000/api/projects/${id}/selected-components`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          element_html: selectedElement?.content || '',
+                          flutter_code: elementFlutterCode,
+                          component_name: saveName.trim(),
+                        }),
+                      });
+                      if (res.ok) {
+                        const saved = await res.json();
+                        setSavedComponents(prev => [saved, ...prev]);
+                        setShowSaveDialog(false);
+                      }
+                    } catch (err) {
+                      console.error(err);
+                    } finally {
+                      setSavingComponent(false);
+                    }
+                  }}
+                  disabled={!saveName.trim() || savingComponent}
+                  style={{
+                    background: saveName.trim() ? '#7C6AF7' : 'rgba(255,255,255,0.05)',
+                    border: 'none',
+                    color: saveName.trim() ? '#fff' : '#4a4a6a',
+                    padding: '8px 16px',
+                    borderRadius: 8,
+                    cursor: saveName.trim() ? 'pointer' : 'not-allowed',
+                    fontSize: 13,
+                    fontWeight: 600,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                  }}
+                >
+                  {savingComponent ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={13} />}
+                  {savingComponent ? 'Saving...' : 'Save'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Tabs + code */}
         <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.05)', padding: '0 20px', gap: 4 }}>
