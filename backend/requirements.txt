@@ -6,3 +6,4 @@ python-multipart==0.0.9
 openai==1.35.3
 requests==2.32.3
 python-dotenv==1.0.1
+stripe==10.4.0

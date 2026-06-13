@@ -3,7 +3,7 @@ import re
 import json
 from uuid import uuid4
 from typing import Dict, Any, List, Optional
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -1004,6 +1004,98 @@ Only suggest changes if genuinely needed. Be conservative."""
         return {"enhancements": {"fonts": {"display": "Inter", "body": "Inter"}, "suggestion": "AI service unavailable.", "contrast_issues": []}}
     except Exception as e:
         return {"enhancements": {"fonts": {"display": "Inter", "body": "Inter"}, "suggestion": f"AI enhancement error: {str(e)}", "contrast_issues": []}}
+
+
+# ── Stripe Billing Endpoints ──────────────────────────────────────
+
+import stripe as stripe_lib
+stripe_lib.api_key = os.environ.get("STRIPE_SECRET_KEY")
+
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
+STRIPE_PRO_PRICE_ID = os.environ.get("STRIPE_PRO_PRICE_ID")
+STRIPE_TEAM_PRICE_ID = os.environ.get("STRIPE_TEAM_PRICE_ID")
+
+class CheckoutRequest(BaseModel):
+    user_id: str
+    plan: str  # "pro" | "team"
+    success_url: str
+    cancel_url: str
+
+class PortalRequest(BaseModel):
+    user_id: str
+
+@app.post("/stripe/create-checkout")
+async def stripe_create_checkout(req: CheckoutRequest):
+    if not stripe_lib.api_key:
+        raise HTTPException(status_code=400, detail="Stripe not configured — set STRIPE_SECRET_KEY")
+    price_id = STRIPE_PRO_PRICE_ID if req.plan == "pro" else STRIPE_TEAM_PRICE_ID
+    if not price_id:
+        raise HTTPException(status_code=400, detail=f"Price ID not configured for plan: {req.plan}")
+
+    try:
+        session = stripe_lib.checkout.Session.create(
+            mode="subscription",
+            line_items=[{"price": price_id, "quantity": 1}],
+            client_reference_id=req.user_id,
+            success_url=req.success_url,
+            cancel_url=req.cancel_url,
+            metadata={"user_id": req.user_id, "plan": req.plan},
+        )
+        return {"checkout_url": session.url, "session_id": session.id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Stripe checkout failed: {str(e)}")
+
+@app.post("/stripe/webhook")
+async def stripe_webhook(request: Request):
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature")
+
+    if not STRIPE_WEBHOOK_SECRET:
+        raise HTTPException(status_code=400, detail="Webhook secret not configured")
+
+    try:
+        event = stripe_lib.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
+    except stripe_lib.error.SignatureVerificationError:
+        raise HTTPException(status_code=400, detail="Invalid signature")
+
+    event_type = event["type"]
+    data = event["data"]["object"]
+
+    if event_type == "checkout.session.completed":
+        user_id = data.get("client_reference_id") or data.get("metadata", {}).get("user_id")
+        plan = data.get("metadata", {}).get("plan", "pro")
+        if user_id:
+            db.set_plan(user_id, plan)
+            print(f"Stripe Webhook: User {user_id} upgraded to {plan}")
+
+    elif event_type in ("customer.subscription.updated", "customer.subscription.deleted"):
+        metadata = data.get("metadata", {})
+        user_id = metadata.get("user_id")
+        if event_type == "customer.subscription.deleted" and user_id:
+            db.set_plan(user_id, "free")
+            print(f"Stripe Webhook: User {user_id} downgraded to free")
+
+    return {"received": True, "type": event_type}
+
+@app.post("/stripe/billing-portal")
+async def stripe_billing_portal(req: PortalRequest):
+    if not stripe_lib.api_key:
+        raise HTTPException(status_code=400, detail="Stripe not configured")
+
+    try:
+        # Create or retrieve Stripe customer
+        session = stripe_lib.billing_portal.Session.create(
+            customer=req.user_id,
+            return_url=f"{os.environ.get('FRONTEND_URL', 'http://localhost:5173')}/settings?tab=billing",
+        )
+        return {"portal_url": session.url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Portal session failed: {str(e)}")
+
+@app.get("/stripe/plan/{user_id}")
+async def stripe_plan_status(user_id: str):
+    plan = db.get_plan(user_id)
+    return {"plan": plan, "status": "active" if plan != "free" else "inactive"}
 
 
 # ── Usage & API Key Endpoints ─────────────────────────────────────

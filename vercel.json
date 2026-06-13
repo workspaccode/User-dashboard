@@ -1,0 +1,14 @@
+{
+  "buildCommand": "pnpm build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "https://brillance-api.railway.app/api/$1" },
+    { "source": "/parse/(.*)", "destination": "https://brillance-api.railway.app/parse/$1" },
+    { "source": "/generate/(.*)", "destination": "https://brillance-api.railway.app/generate/$1" },
+    { "source": "/export/(.*)", "destination": "https://brillance-api.railway.app/export/$1" },
+    { "source": "/preview/(.*)", "destination": "https://brillance-api.railway.app/preview/$1" },
+    { "source": "/serve/(.*)", "destination": "https://brillance-api.railway.app/serve/$1" },
+    { "source": "/stripe/(.*)", "destination": "https://brillance-api.railway.app/stripe/$1" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}

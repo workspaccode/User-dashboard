@@ -41,6 +41,11 @@ export function SettingsPage() {
   const [usage, setUsage] = useState<any>(null);
   const [loadingUsage, setLoadingUsage] = useState(false);
 
+  // Stripe state
+  const [upgrading, setUpgrading] = useState(false);
+  const [plan, setPlan] = useState<string>('free');
+  const [loadingPlan, setLoadingPlan] = useState(false);
+
   const loadKeys = async () => {
     setLoadingKeys(true);
     try {
@@ -106,6 +111,69 @@ export function SettingsPage() {
       toast.error('Failed to delete API key');
     }
   };
+
+  const upgradeToPro = async () => {
+    setUpgrading(true);
+    try {
+      const res = await fetch('http://localhost:8000/stripe/create-checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: USER_ID,
+          plan: 'pro',
+          success_url: `${window.location.origin}/settings?tab=billing&upgrade=success`,
+          cancel_url: `${window.location.origin}/settings?tab=billing`,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.checkout_url) {
+          window.location.href = data.checkout_url;
+        }
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast.error(err.detail || 'Failed to start checkout');
+      }
+    } catch {
+      toast.error('Checkout failed. Make sure Stripe is configured.');
+    }
+    setUpgrading(false);
+  };
+
+  const openBillingPortal = async () => {
+    try {
+      const res = await fetch('http://localhost:8000/stripe/billing-portal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: USER_ID }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.portal_url) window.location.href = data.portal_url;
+      }
+    } catch {
+      toast.error('Failed to open billing portal');
+    }
+  };
+
+  // Load plan + show success toast after upgrade redirect
+  useEffect(() => {
+    setLoadingPlan(true);
+    fetch(`http://localhost:8000/api/plan/${USER_ID}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data) { setPlan(data.plan); }
+        setLoadingPlan(false);
+      })
+      .catch(() => setLoadingPlan(false));
+
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('upgrade') === 'success') {
+      toast.success('Welcome to Pro! All limits removed.');
+      // Clean URL
+      window.history.replaceState({}, '', '/settings?tab=billing');
+    }
+  }, []);
 
   const planColor: Record<string, string> = { free: '#6b6b8a', pro: '#7C6AF7', team: '#10b981' };
 
@@ -278,51 +346,98 @@ export function SettingsPage() {
           <div style={{ maxWidth: 680 }}>
             <h3 style={{ fontSize: 20, fontWeight: 700, marginBottom: 24 }}>Billing & Plans</h3>
 
-            <div style={{ background: 'linear-gradient(135deg, rgba(124,106,247,0.12), rgba(124,106,247,0.04))', border: '1px solid rgba(124,106,247,0.3)', borderRadius: 12, padding: '20px 24px', marginBottom: 24, display: 'flex', alignItems: 'center', gap: 20 }}>
-              <div style={{ width: 44, height: 44, borderRadius: 11, background: 'rgba(124,106,247,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                <Zap size={22} color="#a78bfa" />
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-                  <span style={{ fontSize: 17, fontWeight: 700 }}>Free Plan</span>
-                  <span style={{ background: 'rgba(124,106,247,0.2)', color: '#a78bfa', fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 100 }}>CURRENT</span>
+            {/* Current plan banner */}
+            {loadingPlan ? (
+              <div style={{ padding: 20, textAlign: 'center', color: '#4a4a6a' }}>Loading plan...</div>
+            ) : (
+              <div style={{
+                background: plan === 'free'
+                  ? 'linear-gradient(135deg, rgba(107,107,138,0.08), rgba(107,107,138,0.02))'
+                  : 'linear-gradient(135deg, rgba(124,106,247,0.12), rgba(124,106,247,0.04))',
+                border: `1px solid ${plan === 'free' ? 'rgba(107,107,138,0.2)' : 'rgba(124,106,247,0.3)'}`,
+                borderRadius: 12, padding: '20px 24px', marginBottom: 24,
+                display: 'flex', alignItems: 'center', gap: 20,
+              }}>
+                <div style={{ width: 44, height: 44, borderRadius: 11, background: plan === 'free' ? 'rgba(107,107,138,0.15)' : 'rgba(124,106,247,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <Zap size={22} color={plan === 'free' ? '#6b6b8a' : '#a78bfa'} />
                 </div>
-                <div style={{ fontSize: 13, color: '#6b6b8a' }}>3 imports/month · 10 AI generations/day</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                    <span style={{ fontSize: 17, fontWeight: 700, textTransform: 'capitalize' }}>{plan} Plan</span>
+                    <span style={{ background: plan === 'free' ? 'rgba(107,107,138,0.2)' : 'rgba(124,106,247,0.2)', color: plan === 'free' ? '#6b6b8a' : '#a78bfa', fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 100 }}>CURRENT</span>
+                  </div>
+                  <div style={{ fontSize: 13, color: '#6b6b8a' }}>
+                    {plan === 'free' ? '3 imports/month · 10 AI generations/day' : 'Unlimited imports · 500 AI generations/day'}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {plan === 'free' ? (
+                    <button onClick={upgradeToPro} disabled={upgrading} style={{
+                      background: upgrading ? '#4a4a6a' : '#7C6AF7', border: 'none',
+                      color: '#fff', padding: '8px 16px', borderRadius: 8,
+                      cursor: upgrading ? 'not-allowed' : 'pointer',
+                      fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 5,
+                    }}>
+                      {upgrading ? 'Redirecting...' : <><Crown size={14} /> Upgrade to Pro</>}
+                    </button>
+                  ) : (
+                    <button onClick={openBillingPortal} style={{
+                      background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+                      color: '#e8e8f0', padding: '8px 16px', borderRadius: 8,
+                      cursor: 'pointer', fontSize: 13,
+                    }}>
+                      Manage Billing
+                    </button>
+                  )}
+                </div>
               </div>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button style={{ background: '#7C6AF7', border: 'none', color: '#fff', padding: '8px 16px', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 5 }}>
-                  <Crown size={14} /> Upgrade to Pro
-                </button>
-              </div>
-            </div>
+            )}
 
             {/* Plan comparison */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12, marginBottom: 28 }}>
-              {[{ id: 'free', name: 'Free', price: '$0/mo', color: '#6b6b8a', current: true },
-                { id: 'pro', name: 'Pro', price: '$19/mo', color: '#7C6AF7', current: false },
-              ].map(p => (
-                <div key={p.id} style={{ background: p.current ? `${p.color}10` : '#111118', border: `1px solid ${p.current ? `${p.color}30` : 'rgba(255,255,255,0.06)'}`, borderRadius: 10, padding: 20 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: p.current ? p.color : '#c8c8e0', marginBottom: 4 }}>{p.name}</div>
-                  <div style={{ fontSize: 24, fontWeight: 700, color: '#e8e8f0', marginBottom: 12 }}>{p.price}</div>
-                  {p.current && <div style={{ fontSize: 12, color: p.color, background: `${p.color}15`, borderRadius: 100, padding: '2px 10px', display: 'inline-block' }}>Current plan</div>}
-                  <div style={{ marginTop: 12, fontSize: 12, color: '#6b6b8a', lineHeight: 1.8 }}>
-                    {p.id === 'free' ? (
-                      <>• 3 imports/month<br />• 10 AI generations/day<br />• 50 saved components<br />• 3 design systems</>
-                    ) : (
-                      <>• Unlimited imports<br />• 500 AI generations/day<br />• Unlimited components<br />• Unlimited design systems<br />• Priority support</>
+              {[
+                { id: 'free', name: 'Free', price: '$0/mo', color: '#6b6b8a', features: ['3 imports/month', '10 AI generations/day', '50 saved components', '3 design systems'] },
+                { id: 'pro', name: 'Pro', price: '$19/mo', color: '#7C6AF7', features: ['Unlimited imports', '500 AI generations/day', 'Unlimited components', 'Unlimited design systems', 'Priority support'] },
+              ].map(p => {
+                const isCurrent = plan === p.id;
+                return (
+                  <div key={p.id} style={{ background: isCurrent ? `${p.color}10` : '#111118', border: `1px solid ${isCurrent ? `${p.color}30` : 'rgba(255,255,255,0.06)'}`, borderRadius: 10, padding: 20, position: 'relative' }}>
+                    {isCurrent && <div style={{ position: 'absolute', top: 12, right: 12, fontSize: 10, color: p.color, background: `${p.color}15`, padding: '2px 8px', borderRadius: 100, fontWeight: 600 }}>CURRENT</div>}
+                    <div style={{ fontSize: 14, fontWeight: 600, color: isCurrent ? p.color : '#c8c8e0', marginBottom: 4 }}>{p.name}</div>
+                    <div style={{ fontSize: 24, fontWeight: 700, color: '#e8e8f0', marginBottom: 16 }}>{p.price}</div>
+                    <div style={{ fontSize: 12, color: '#6b6b8a', lineHeight: 1.8 }}>
+                      {p.features.map((f, i) => <div key={i}>✓ {f}</div>)}
+                    </div>
+                    {p.id === 'pro' && plan === 'free' && (
+                      <button onClick={upgradeToPro} disabled={upgrading} style={{
+                        marginTop: 16, width: '100%', background: upgrading ? '#4a4a6a' : '#7C6AF7',
+                        border: 'none', color: '#fff', padding: '9px', borderRadius: 8,
+                        cursor: upgrading ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 600,
+                      }}>
+                        {upgrading ? 'Redirecting...' : 'Upgrade Now →'}
+                      </button>
                     )}
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
-            {/* Stripe placeholder */}
-            <div style={{ padding: '20px', background: '#111118', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 12, textAlign: 'center' }}>
-              <CreditCard size={20} color="#4a4a6a" style={{ marginBottom: 8 }} />
-              <div style={{ fontSize: 14, color: '#6b6b8a' }}>
-                Stripe billing integration coming soon. You'll be able to manage your subscription and payment methods here.
+            {/* Manage billing link */}
+            {plan !== 'free' && (
+              <div style={{ padding: '16px 20px', background: '#111118', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
+                <CreditCard size={18} color="#6b6b8a" />
+                <div style={{ flex: 1, fontSize: 13, color: '#6b6b8a' }}>
+                  Manage your payment methods, invoices, and subscription settings.
+                </div>
+                <button onClick={openBillingPortal} style={{
+                  background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
+                  color: '#e8e8f0', padding: '8px 16px', borderRadius: 8,
+                  cursor: 'pointer', fontSize: 13,
+                }}>
+                  Billing Portal →
+                </button>
               </div>
-            </div>
+            )}
           </div>
         )}
       </div>
