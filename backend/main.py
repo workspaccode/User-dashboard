@@ -11,6 +11,10 @@ from bs4 import BeautifulSoup
 import uvicorn
 import requests
 from db import DatabaseManager
+from design_system import generate_full_system, generate_flutter_theme, generate_css_variables, generate_json_tokens, generate_figma_script, generate_tailwind_config
+from figma_parser import parse_figma_url
+from svg_parser import parse_svg
+from limits import check_limit
 
 app = FastAPI(title="Brillance API", version="1.0.0")
 db = DatabaseManager()
@@ -50,6 +54,7 @@ class ComponentNode(BaseModel):
 class GenerateFlutterRequest(BaseModel):
     component_tree: Dict[str, Any]
     options: Optional[Dict[str, Any]] = {"rtl": False, "theme": "material3"}
+    user_id: Optional[str] = None
 
 class DesignSystemRequest(BaseModel):
     brand_name: str
@@ -66,6 +71,14 @@ class ProjectCreate(BaseModel):
 class ParseElementRequest(BaseModel):
     html: str
     context_css: Optional[str] = ""
+    project_id: Optional[str] = None
+
+class FigmaUrlRequest(BaseModel):
+    figma_url: str
+    access_token: str
+    project_id: Optional[str] = None
+
+class FigmaFileUpload(BaseModel):
     project_id: Optional[str] = None
 
 
@@ -287,7 +300,13 @@ def extract_single_element(html_snippet: str, context_css: str = "") -> Optional
 
 # Parse HTML and extract ComponentTree (Stateless API)
 @app.post("/parse/html")
-async def parse_html(file: UploadFile = File(...)):
+async def parse_html(file: UploadFile = File(...), user_id: Optional[str] = Form(None)):
+    if user_id:
+        allowed, msg = check_limit(db, user_id, "import")
+        if not allowed:
+            raise HTTPException(status_code=429, detail=msg)
+        db.log_usage(user_id, "import")
+
     try:
         contents = await file.read()
         html_content = contents.decode("utf-8")
@@ -314,6 +333,103 @@ async def parse_html_element(req: ParseElementRequest):
         "component": component.model_dump(),
         "flutter_code": flutter_result
     }
+
+
+# --- Figma Parser Routes ---
+
+@app.post("/parse/figma/url")
+async def parse_figma_url_endpoint(req: FigmaUrlRequest):
+    if req.project_id:
+        allowed, msg = check_limit(db, req.project_id, "import")
+        if not allowed:
+            raise HTTPException(status_code=429, detail=msg)
+        db.log_usage(req.project_id, "import")
+    try:
+        result = parse_figma_url(req.figma_url, req.access_token)
+        return result
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except TimeoutError as e:
+        raise HTTPException(status_code=504, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Figma parse failed: {str(e)}")
+
+
+@app.post("/parse/figma/file")
+async def parse_figma_file_endpoint(file: UploadFile = File(...), project_id: Optional[str] = Form(None)):
+    try:
+        contents = await file.read()
+        import zipfile, io
+        from figma_parser import parse_figma_node
+
+        if not file.filename or not file.filename.lower().endswith(".fig"):
+            raise HTTPException(status_code=400, detail="Only .fig files are supported")
+
+        with zipfile.ZipFile(io.BytesIO(contents)) as zf:
+            if "document.json" not in zf.namelist():
+                raise HTTPException(status_code=400, detail="Invalid .fig file: missing document.json")
+            with zf.open("document.json") as doc_file:
+                figma_data = json.loads(doc_file.read().decode("utf-8"))
+
+        doc = figma_data.get("document", {})
+        pages_raw = doc.get("children", [])
+        pages = []
+        all_components = []
+        total_count = 0
+
+        for page_node in pages_raw:
+            page_name = page_node.get("name", "Untitled")
+            page_components = []
+            for child in page_node.get("children", []):
+                result = parse_figma_node(child, page_name)
+                if result:
+                    page_components.append(result)
+
+            from figma_parser import flatten_components
+            flat = flatten_components(page_components)
+            pages.append({"page": page_name, "components": flat})
+            all_components.extend(flat)
+            total_count += len(flat)
+
+        return {
+            "file_name": file.filename,
+            "file_key": None,
+            "pages": pages,
+            "components": all_components,
+            "total": total_count,
+            "styles": {},
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Fig file parse failed: {str(e)}")
+
+
+# --- SVG Parser Route ---
+
+@app.post("/parse/svg")
+async def parse_svg_endpoint(file: UploadFile = File(...), user_id: Optional[str] = Form(None)):
+    if user_id:
+        allowed, msg = check_limit(db, user_id, "import")
+        if not allowed:
+            raise HTTPException(status_code=429, detail=msg)
+        db.log_usage(user_id, "import")
+
+    try:
+        contents = await file.read()
+        svg_text = contents.decode("utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
+
+    if not svg_text.strip().startswith("<svg") and "<svg" not in svg_text[:200]:
+        raise HTTPException(status_code=400, detail="File does not appear to be valid SVG")
+
+    components = parse_svg(svg_text)
+    return components
 
 
 # --- Database Persistence Routes ---
@@ -564,6 +680,12 @@ async def get_temp_preview(temp_id: str):
 # Generate Flutter widget code from ComponentTree
 @app.post("/generate/flutter")
 async def generate_flutter(request: GenerateFlutterRequest):
+    if request.user_id:
+        allowed, msg = check_limit(db, request.user_id, "generate")
+        if not allowed:
+            raise HTTPException(status_code=429, detail=msg)
+        db.log_usage(request.user_id, "generate")
+
     tree = request.component_tree
     options = request.options or {}
     rtl = options.get("rtl", False)
@@ -794,93 +916,180 @@ class {name} extends StatelessWidget {{
     return flutter_class
 
 
-# Generate Design Token sets from configuration
+# Design System Token Generation Engine
 @app.post("/generate/design-system")
 async def generate_design_system(request: DesignSystemRequest):
-    brand = request.brand_name
-    hex_color = request.primary_color.replace("#", "")
-    preset = request.style_preset
-    
-    # Simple color scale generator (Tailwind style)
-    # We will generate mock 50-900 palettes based on the primary color
-    color_scale = {
-        "50": f"#f3f0ff",
-        "100": f"#e8e2fe",
-        "200": f"#d2c6fe",
-        "300": f"#b29dfd",
-        "400": f"#8f6cfc",
-        "500": f"#{hex_color}",
-        "600": f"#6c4ee6",
-        "700": f"#553bb8",
-        "800": f"#453194",
-        "900": f"#3b2a7a"
-    }
-    
-    theme_dart = f"""// {brand} ThemeData - Material 3 Design Tokens
-// Generated by Brillance Design System Generator ({preset} preset)
+    hex_color = request.primary_color.lstrip("#")
+    tokens = generate_full_system(
+        brand_name=request.brand_name,
+        primary_color=f"#{hex_color}",
+        preset=request.style_preset,
+        dark=False
+    )
+    return tokens
 
-import 'package:flutter/material.dart';
 
-final ThemeData {brand.lower().replace(" ", "_")}_theme = ThemeData(
-  useMaterial3: true,
-  colorScheme: ColorScheme.fromSeed(
-    seedColor: const Color(0xFF{hex_color}),
-    primary: const Color(0xFF{hex_color}),
-    secondary: const Color(0xFF6C4EE6),
-    surface: const Color(0xFF0A0A0F),
-    background: const Color(0xFF0A0A0F),
-    brightness: Brightness.dark,
-  ),
-  textTheme: const TextTheme(
-    displayLarge: TextStyle(fontSize: 57, fontWeight: FontWeight.w400, letterSpacing: -0.25),
-    headlineMedium: TextStyle(fontSize: 28, fontWeight: FontWeight.w600, letterSpacing: 0),
-    bodyLarge: TextStyle(fontSize: 16, fontWeight: FontWeight.w400, letterSpacing: 0.5),
-    labelMedium: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, letterSpacing: 0.5),
-  ),
-  cardTheme: CardTheme(
-    color: const Color(0xFF111118),
-    shape: RoundedRectangleBorder(
-      borderRadius: BorderRadius.circular(12),
-    ),
-  ),
-);"""
+# Export endpoints
+class ExportRequest(BaseModel):
+    tokens: Dict[str, Any]
 
-    css_vars = f"""/* {brand} Design Tokens - CSS Variables */
-:root {{
-  --brand-name: "{brand}";
-  --color-primary-500: #{hex_color};
-  --color-primary-50: {color_scale["50"]};
-  --color-primary-100: {color_scale["100"]};
-  --color-primary-200: {color_scale["200"]};
-  --color-primary-300: {color_scale["300"]};
-  --color-primary-400: {color_scale["400"]};
-  --color-primary-600: {color_scale["600"]};
-  --color-primary-700: {color_scale["700"]};
-  --color-primary-800: {color_scale["800"]};
-  --color-primary-900: {color_scale["900"]};
+@app.post("/export/theme-dart")
+async def export_theme_dart(req: ExportRequest):
+    return {"code": generate_flutter_theme(req.tokens)}
 
-  --radius-none: 0px;
-  --radius-sm: 4px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
-  --radius-full: 9999px;
 
-  --spacing-1: 4px;
-  --spacing-2: 8px;
-  --spacing-3: 12px;
-  --spacing-4: 16px;
-  --spacing-6: 24px;
-  --spacing-8: 32px;
-}}"""
+@app.post("/export/css-vars")
+async def export_css_vars(req: ExportRequest):
+    return {"code": generate_css_variables(req.tokens)}
 
-    return {
-        "brand_name": brand,
-        "primary_scale": color_scale,
-        "style_preset": preset,
-        "theme_dart": theme_dart,
-        "css_variables": css_vars
-    }
+
+@app.post("/export/json-tokens")
+async def export_json_tokens(req: ExportRequest):
+    return {"code": generate_json_tokens(req.tokens)}
+
+
+@app.post("/export/figma-script")
+async def export_figma_script(req: ExportRequest):
+    return {"code": generate_figma_script(req.tokens)}
+
+
+@app.post("/export/tailwind-config")
+async def export_tailwind_config(req: ExportRequest):
+    return {"code": generate_tailwind_config(req.tokens)}
+
+
+# AI Enhancement
+class EnhanceRequest(BaseModel):
+    tokens: Dict[str, Any]
+    brand_name: str
+    primary_color: str
+    preset: str
+
+@app.post("/generate/design-system/enhance")
+async def enhance_design_system(req: EnhanceRequest):
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    if not openai_key:
+        return {
+            "enhancements": {
+                "fonts": {"display": "Inter", "body": "Inter"},
+                "suggestion": "Enable an OpenAI API key in your environment for AI-powered font recommendations.",
+                "contrast_issues": []
+            }
+        }
+    try:
+        prompt = f"""You are a design system expert. Review the following design system tokens and suggest improvements.
+
+Brand: {req.brand_name}
+Primary Color: {req.primary_color}
+Preset: {req.preset}
+
+Current tokens (abbreviated):
+{json.dumps(req.tokens, indent=2)[:1000]}
+
+Respond in JSON with this exact structure:
+{{
+  "fonts": {{"display": "recommended font name", "body": "recommended font name"}},
+  "suggestion": "1-2 sentence improvement suggestion",
+  "contrast_issues": ["issue1", "issue2"]
+}}
+
+Only suggest changes if genuinely needed. Be conservative."""
+        
+        headers = {"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"}
+        data = {"model": "gpt-4o", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "response_format": {"type": "json_object"}}
+        response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=data, timeout=15)
+        if response.status_code == 200:
+            result = response.json()
+            return {"enhancements": json.loads(result["choices"][0]["message"]["content"])}
+        return {"enhancements": {"fonts": {"display": "Inter", "body": "Inter"}, "suggestion": "AI service unavailable.", "contrast_issues": []}}
+    except Exception as e:
+        return {"enhancements": {"fonts": {"display": "Inter", "body": "Inter"}, "suggestion": f"AI enhancement error: {str(e)}", "contrast_issues": []}}
+
+
+# ── Usage & API Key Endpoints ─────────────────────────────────────
+
+class LimitCheckRequest(BaseModel):
+    user_id: str
+    action: str  # 'import' | 'generate'
+
+@app.post("/api/limits/check")
+async def api_check_limit(req: LimitCheckRequest):
+    allowed, message = check_limit(db, req.user_id, req.action)
+    return {"allowed": allowed, "message": message}
+
+@app.get("/api/usage/{user_id}")
+async def api_get_usage(user_id: str):
+    return db.get_usage_stats(user_id)
+
+@app.get("/api/plan/{user_id}")
+async def api_get_plan(user_id: str):
+    plan = db.get_plan(user_id)
+    limits = db.get_limits(user_id)
+    return {"plan": plan, "limits": limits}
+
+class CreateKeyRequest(BaseModel):
+    user_id: str
+
+@app.post("/api/keys")
+async def api_create_key(req: CreateKeyRequest):
+    try:
+        result = db.create_api_key(req.user_id)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/keys/{user_id}")
+async def api_list_keys(user_id: str):
+    return db.get_api_keys(user_id)
+
+@app.delete("/api/keys/{key_id}")
+async def api_delete_key(key_id: str, user_id: str):
+    success = db.delete_api_key(key_id, user_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Key not found")
+    return {"success": True}
+
+@app.post("/api/keys/verify")
+async def api_verify_key(req: dict):
+    key = req.get("key", "")
+    user_id = db.verify_api_key(key)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return {"valid": True, "user_id": user_id}
+
+
+# Design System Persistence
+class DesignSystemSaveRequest(BaseModel):
+    project_id: Optional[str] = None
+    name: str
+    primary_color: str
+    preset: str
+    tokens: Dict[str, Any]
+
+@app.post("/api/design-systems")
+async def save_design_system(req: DesignSystemSaveRequest):
+    try:
+        result = db.save_design_system(
+            project_id=req.project_id,
+            name=req.name,
+            primary_color=req.primary_color,
+            preset=req.preset,
+            tokens=req.tokens
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/design-systems")
+async def list_design_systems(project_id: Optional[str] = None):
+    return db.get_design_systems(project_id)
+
+@app.get("/api/design-systems/{ds_id}")
+async def get_design_system(ds_id: str):
+    ds = db.get_design_system(ds_id)
+    if not ds:
+        raise HTTPException(status_code=404, detail="Design system not found")
+    return ds
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

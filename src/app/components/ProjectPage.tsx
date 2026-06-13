@@ -4,8 +4,12 @@ import {
   Search, Filter, Copy, Check, Moon, Sun, AlignRight,
   Layers, Code2, PenTool, Box, ChevronRight, Download,
   ExternalLink, Eye, Layout, Type, Square, Circle, Hash,
-  Globe, MousePointer, Loader2, PanelRightClose, PanelRightOpen
+  Globe, MousePointer, Loader2, PanelRightClose, PanelRightOpen,
+  Figma, Upload, EyeOff, X, FileUp
 } from 'lucide-react';
+import { toast } from 'sonner';
+import { GallerySkeleton, CodeSkeleton } from './Skeletons';
+import { NoComponents } from './EmptyStates';
 
 // Fallback initial list
 const COMPONENTS = [
@@ -147,7 +151,9 @@ function CodeBlock({ code }: { code: string }) {
   const [copied, setCopied] = useState(false);
 
   const copyCode = () => {
-    navigator.clipboard.writeText(code).catch(() => {});
+    navigator.clipboard.writeText(code).then(() => {
+      toast.success('Code copied to clipboard');
+    }).catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 1800);
   };
@@ -231,6 +237,47 @@ export function ProjectPage() {
   const [saveName, setSaveName] = useState('');
   const [savingComponent, setSavingComponent] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  
+  // Figma import states
+  const [showFigmaImport, setShowFigmaImport] = useState(false);
+  const [figmaUrl, setFigmaUrl] = useState('');
+  const [figmaToken, setFigmaToken] = useState('');
+  const [figmaImporting, setFigmaImporting] = useState(false);
+  const [figmaError, setFigmaError] = useState('');
+  const [figmaFileUploading, setFigmaFileUploading] = useState(false);
+  const [galleryLoading] = useState(false);
+
+  // SVG import state
+  const [svgImporting, setSvgImporting] = useState(false);
+
+  const handleSvgImport = useCallback(async (file: File) => {
+    setSvgImporting(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch('http://localhost:8000/parse/svg', {
+        method: 'POST',
+        body: formData,
+      });
+      if (!res.ok) throw new Error('SVG parse failed');
+      const data = await res.json();
+      const svgComps = (Array.isArray(data) ? data : data.components || []).map((c: any) => ({
+        ...c,
+        color: c.styles?.bg || '#10b981',
+        source: 'svg',
+      }));
+      if (svgComps.length > 0) {
+        setComponentsList(prev => [...svgComps, ...prev]);
+        setSelected(svgComps[0]);
+        toast.success(`Imported ${svgComps.length} component(s) from SVG`);
+      }
+    } catch (err: any) {
+      console.error('SVG import error:', err);
+      toast.error('SVG import failed', 'Make sure the backend is running');
+    } finally {
+      setSvgImporting(false);
+    }
+  }, []);
 
   // Load components and metadata dynamically
   useEffect(() => {
@@ -266,6 +313,7 @@ export function ProjectPage() {
         throw new Error('Fallback to static components');
       } catch (err) {
         console.warn('Backend fetch failed, using fallback component lists.');
+        toast.error('Could not load project', 'Using fallback data');
         
         // Try reading local storage first
         const stored = localStorage.getItem('brillance_parsed_components');
@@ -312,7 +360,7 @@ export function ProjectPage() {
       .then(data => {
         if (data?.raw_html) setRawHtml(data.raw_html);
       })
-      .catch(() => {});
+      .catch(() => { toast.error('Failed to load HTML preview', 'Check backend connection'); });
   }, [id]);
 
   // Fetch saved components
@@ -321,7 +369,7 @@ export function ProjectPage() {
     fetch(`http://localhost:8000/api/projects/${id}/selected-components`)
       .then(r => r.ok ? r.json() : [])
       .then(data => setSavedComponents(data))
-      .catch(() => {});
+      .catch(() => { toast.error('Failed to load saved components', 'Check backend connection'); });
   }, [id]);
 
   // Listen for iframe postMessage
@@ -345,11 +393,85 @@ export function ProjectPage() {
       const result = await res.json();
       setSelectedElement(result.component);
       setElementFlutterCode(result.flutter_code);
+      toast.success('Element parsed successfully');
     } catch (err) {
       console.error(err);
       setElementFlutterCode('// Failed to generate code\n// Make sure the backend is running');
+      toast.error('Failed to parse HTML element');
     } finally {
       setElementLoading(false);
+    }
+  }, [id]);
+
+  // Figma import handler
+  const handleFigmaImport = useCallback(async () => {
+    setFigmaImporting(true);
+    setFigmaError('');
+    try {
+      const res = await fetch('http://localhost:8000/parse/figma/url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          figma_url: figmaUrl,
+          access_token: figmaToken,
+          project_id: id,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || 'Figma import failed');
+      }
+      const data = await res.json();
+      const figmaComps = data.components.map((c: any) => ({
+        ...c,
+        color: c.styles?.bg || '#7C6AF7',
+        source: 'figma',
+        figma_url: figmaUrl,
+      }));
+      setComponentsList(prev => [...figmaComps, ...prev]);
+      if (figmaComps.length > 0) setSelected(figmaComps[0]);
+      setShowFigmaImport(false);
+      setFigmaUrl('');
+      setFigmaToken('');
+      toast.success(`Imported ${figmaComps.length} component(s) from Figma`);
+    } catch (err: any) {
+      setFigmaError(err.message || 'Figma import failed');
+      toast.error('Figma import failed', err.message);
+    } finally {
+      setFigmaImporting(false);
+    }
+  }, [figmaUrl, figmaToken, id]);
+
+  // Figma file upload handler
+  const handleFigmaFileUpload = useCallback(async (file: File) => {
+    setFigmaFileUploading(true);
+    setFigmaError('');
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch('http://localhost:8000/parse/figma/file', {
+        method: 'POST',
+        body: formData,
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || 'Fig file import failed');
+      }
+      const data = await res.json();
+      const figmaComps = data.components.map((c: any) => ({
+        ...c,
+        color: c.styles?.bg || '#7C6AF7',
+        source: 'figma',
+      }));
+      setComponentsList(prev => [...figmaComps, ...prev]);
+      if (figmaComps.length > 0) setSelected(figmaComps[0]);
+      setShowFigmaImport(false);
+      toast.success(`Imported ${figmaComps.length} component(s) from .fig file`);
+    } catch (err: any) {
+      setFigmaError(err.message || 'Fig file import failed');
+      toast.error('.fig import failed', err.message);
+    } finally {
+      setFigmaFileUploading(false);
     }
   }, [id]);
 
@@ -390,6 +512,7 @@ export function ProjectPage() {
         setFlutterCode(data.code);
       } catch (err) {
         console.error(err);
+        toast.error('Failed to generate Flutter code', 'Backend may be unavailable');
         setFlutterCode(`// Fallback generated Flutter Widget\nclass ${selected.name} extends StatelessWidget {\n  const ${selected.name}({super.key});\n  @override\n  Widget build(BuildContext context) {\n    return Container();\n  }\n}`);
       } finally {
         setLoadingCode(false);
@@ -430,6 +553,54 @@ export function ProjectPage() {
                 style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)', color: '#6b6b8a', padding: 6, borderRadius: 6, cursor: 'pointer' }}
               >
                 <Box size={14} />
+              </button>
+              <button
+                onClick={() => setShowFigmaImport(true)}
+                title="Import from Figma"
+                style={{ background: 'rgba(10,132,255,0.1)', border: '1px solid rgba(10,132,255,0.2)', color: '#0a84ff', padding: 6, borderRadius: 6, cursor: 'pointer' }}
+              >
+                <Figma size={14} />
+              </button>
+              <input
+                type="file" id="html-file-input" accept=".html,.htm"
+                style={{ display: 'none' }}
+                onChange={async e => {
+                  const f = e.target.files?.[0];
+                  if (f) {
+                    const formData = new FormData();
+                    formData.append('file', f);
+                    try {
+                      const res = await fetch('http://localhost:8000/parse/html', { method: 'POST', body: formData });
+                      if (res.ok) {
+                        const comps = await res.json();
+                        const mapped = comps.map((c: any) => ({ ...c, color: c.styles?.bg || '#7C6AF7', source: 'html' }));
+                        setComponentsList(prev => [...mapped, ...prev]);
+                        if (mapped.length > 0) setSelected(mapped[0]);
+                        toast.success(`Imported ${mapped.length} component(s) from HTML`);
+                      }
+                    } catch (err) {
+                      toast.error('HTML import failed');
+                    }
+                  }
+                  e.target.value = '';
+                }}
+              />
+              <input
+                type="file" id="svg-file-input" accept=".svg"
+                style={{ display: 'none' }}
+                onChange={async e => {
+                  const f = e.target.files?.[0];
+                  if (f) await handleSvgImport(f);
+                  e.target.value = '';
+                }}
+              />
+              <button
+                onClick={() => document.getElementById('svg-file-input')?.click()}
+                disabled={svgImporting}
+                title="Import from SVG"
+                style={{ background: svgImporting ? 'rgba(16,185,129,0.05)' : 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.2)', color: svgImporting ? '#6b6b8a' : '#10b981', padding: 6, borderRadius: 6, cursor: svgImporting ? 'not-allowed' : 'pointer' }}
+              >
+                {svgImporting ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <FileUp size={14} />}
               </button>
             </div>
           </div>
@@ -488,7 +659,15 @@ export function ProjectPage() {
 
         {/* Component list */}
         <div style={{ flex: 1, overflow: 'auto', padding: '8px 8px' }}>
-          {filtered.map(comp => (
+          {galleryLoading ? (
+            <GallerySkeleton count={6} />
+          ) : filtered.length === 0 ? (
+            <NoComponents onUpload={(type) => {
+              if (type === 'figma') setShowFigmaImport(true);
+              else if (type === 'svg') document.getElementById('svg-file-input')?.click();
+              else if (type === 'html') document.getElementById('html-file-input')?.click();
+            }} />
+          ) : filtered.map(comp => (
             <button
               key={comp.id}
               onClick={() => setSelected(comp)}
@@ -514,15 +693,35 @@ export function ProjectPage() {
                 <div style={{ fontSize: 13, color: selected && selected.id === comp.id ? '#a78bfa' : '#c8c8e0', fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{comp.name}</div>
                 <div style={{ fontSize: 11, color: '#4a4a6a' }}>{comp.variants || 1} variant{comp.variants !== 1 ? 's' : ''}</div>
               </div>
-              <span style={{
-                fontSize: 10,
-                color: TYPE_COLORS[comp.type] || '#6b6b8a',
-                background: `${TYPE_COLORS[comp.type] || '#6b6b8a'}15`,
-                border: `1px solid ${TYPE_COLORS[comp.type] || '#6b6b8a'}25`,
-                padding: '2px 7px',
-                borderRadius: 4,
-                flexShrink: 0,
-              }}>{comp.type}</span>
+              <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexShrink: 0 }}>
+                {comp.source === 'figma' && (
+                  <span style={{
+                    fontSize: 9, color: '#0a84ff', background: 'rgba(10,132,255,0.12)',
+                    border: '1px solid rgba(10,132,255,0.2)', padding: '2px 5px',
+                    borderRadius: 3, display: 'flex', alignItems: 'center', gap: 2,
+                  }}>
+                    <Figma size={9} /> Figma
+                  </span>
+                )}
+                {comp.source === 'svg' && (
+                  <span style={{
+                    fontSize: 9, color: '#10b981', background: 'rgba(16,185,129,0.12)',
+                    border: '1px solid rgba(16,185,129,0.2)', padding: '2px 5px',
+                    borderRadius: 3, display: 'flex', alignItems: 'center', gap: 2,
+                  }}>
+                    <FileUp size={9} /> SVG
+                  </span>
+                )}
+                <span style={{
+                  fontSize: 10,
+                  color: TYPE_COLORS[comp.type] || '#6b6b8a',
+                  background: `${TYPE_COLORS[comp.type] || '#6b6b8a'}15`,
+                  border: `1px solid ${TYPE_COLORS[comp.type] || '#6b6b8a'}25`,
+                  padding: '2px 7px',
+                  borderRadius: 4,
+                  flexShrink: 0,
+                }}>{comp.type}</span>
+              </div>
             </button>
           ))}
         </div>
@@ -533,10 +732,24 @@ export function ProjectPage() {
         {/* Preview toolbar */}
         <div style={{ padding: '12px 20px', borderBottom: '1px solid rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', gap: 12 }}>
           {selected && (
-            <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{ fontSize: 15, fontWeight: 600 }}>{selected.name}</span>
-              <ChevronRight size={14} color="#4a4a6a" style={{ display: 'inline', marginLeft: 6 }} />
+              <ChevronRight size={14} color="#4a4a6a" style={{ display: 'inline' }} />
               <span style={{ fontSize: 13, color: '#6b6b8a' }}>{selected.type}</span>
+              {selected.source === 'figma' && (
+                <a
+                  href={selected.figma_url || '#'}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    fontSize: 11, color: '#0a84ff', textDecoration: 'none',
+                    background: 'rgba(10,132,255,0.1)', border: '1px solid rgba(10,132,255,0.2)',
+                    padding: '3px 8px', borderRadius: 5, display: 'flex', alignItems: 'center', gap: 4,
+                  }}
+                >
+                  <Figma size={12} /> View in Figma
+                </a>
+              )}
             </div>
           )}
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
@@ -745,9 +958,11 @@ export function ProjectPage() {
                         const saved = await res.json();
                         setSavedComponents(prev => [saved, ...prev]);
                         setShowSaveDialog(false);
+                        toast.success(`Component "${saveName.trim()}" saved`);
                       }
                     } catch (err) {
                       console.error(err);
+                      toast.error('Failed to save component');
                     } finally {
                       setSavingComponent(false);
                     }
@@ -801,7 +1016,7 @@ export function ProjectPage() {
 
         <div style={{ flex: 1, overflow: 'hidden', padding: '12px 20px', paddingBottom: 0 }}>
           {activeTab === 'widget' && (
-            <CodeBlock code={loadingCode ? 'Generating Flutter code from ComponentTree...' : flutterCode} />
+            loadingCode ? <CodeSkeleton lines={14} /> : <CodeBlock code={flutterCode} />
           )}
           {activeTab === 'tokens' && selected && (
             <div style={{ height: '100%', overflow: 'auto', fontFamily: 'var(--font-mono)', fontSize: 13, lineHeight: 1.8 }}>
@@ -844,6 +1059,127 @@ Widget build(BuildContext context) {
           )}
         </div>
       </div>
+
+      {/* Figma Import Modal */}
+      {showFigmaImport && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          zIndex: 100,
+        }} onClick={() => setShowFigmaImport(false)}>
+          <div style={{
+            background: '#16161f', borderRadius: 14, border: '1px solid rgba(255,255,255,0.08)',
+            padding: 28, width: 480, maxWidth: '90vw', maxHeight: '85vh', overflow: 'auto',
+          }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
+              <div style={{ width: 36, height: 36, borderRadius: 10, background: 'rgba(10,132,255,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Figma size={18} color="#0a84ff" />
+              </div>
+              <div>
+                <div style={{ fontSize: 16, fontWeight: 600, color: '#e8e8f0' }}>Import from Figma</div>
+                <div style={{ fontSize: 12, color: '#6b6b8a' }}>Paste a Figma URL or upload a .fig file</div>
+              </div>
+              <button onClick={() => setShowFigmaImport(false)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: '#6b6b8a', cursor: 'pointer', padding: 4 }}>
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Method A: Figma URL */}
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: 13, color: '#a89bfa', marginBottom: 6, display: 'block' }}>Figma File URL</label>
+              <input
+                value={figmaUrl}
+                onChange={e => setFigmaUrl(e.target.value)}
+                placeholder="https://www.figma.com/file/XXXXX/MyDesign"
+                style={{ width: '100%', background: '#1a1a28', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 8, padding: '10px 12px', color: '#e8e8f0', fontSize: 13, outline: 'none', boxSizing: 'border-box' }}
+              />
+            </div>
+
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ fontSize: 13, color: '#a89bfa', marginBottom: 6, display: 'block' }}>Personal Access Token</label>
+              <input
+                type="password"
+                value={figmaToken}
+                onChange={e => setFigmaToken(e.target.value)}
+                placeholder="figd_xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                style={{ width: '100%', background: '#1a1a28', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 8, padding: '10px 12px', color: '#e8e8f0', fontSize: 13, outline: 'none', boxSizing: 'border-box', fontFamily: 'var(--font-mono)' }}
+              />
+              <div style={{ fontSize: 11, color: '#4a4a6a', marginTop: 4 }}>
+                Get your token from Figma Settings → Account → Personal Access Tokens.
+                <span style={{ color: '#f87171', marginLeft: 4 }}>Not stored on our server.</span>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button
+                onClick={() => {
+                  if (!figmaUrl.trim() || !figmaToken.trim()) {
+                    setFigmaError('Please enter both the Figma URL and access token');
+                    return;
+                  }
+                  handleFigmaImport();
+                }}
+                disabled={figmaImporting}
+                style={{
+                  flex: 1, background: figmaImporting ? 'rgba(10,132,255,0.5)' : '#0a84ff',
+                  border: 'none', color: '#fff', padding: '11px', borderRadius: 8,
+                  cursor: figmaImporting ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 600,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
+                }}
+              >
+                {figmaImporting ? <Loader2 size={15} style={{ animation: 'spin 1s linear infinite' }} /> : <Figma size={15} />}
+                {figmaImporting ? 'Importing...' : 'Import from URL'}
+              </button>
+            </div>
+
+            {/* Divider */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '16px 0' }}>
+              <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.06)' }} />
+              <span style={{ fontSize: 12, color: '#4a4a6a' }}>or</span>
+              <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.06)' }} />
+            </div>
+
+            {/* Method B: .fig file upload */}
+            <div>
+              <input
+                type="file"
+                id="fig-file-input"
+                accept=".fig"
+                style={{ display: 'none' }}
+                onChange={async e => {
+                  const file = e.target.files?.[0];
+                  if (file) await handleFigmaFileUpload(file);
+                  e.target.value = '';
+                }}
+              />
+              <button
+                onClick={() => document.getElementById('fig-file-input')?.click()}
+                disabled={figmaFileUploading}
+                style={{
+                  width: '100%', background: figmaFileUploading ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.04)',
+                  border: '1px dashed rgba(255,255,255,0.15)', color: '#6b6b8a', padding: '16px', borderRadius: 8,
+                  cursor: figmaFileUploading ? 'not-allowed' : 'pointer', fontSize: 13,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                }}
+              >
+                {figmaFileUploading ? (
+                  <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} />
+                ) : (
+                  <FileUp size={16} />
+                )}
+                {figmaFileUploading ? 'Uploading and parsing...' : 'Upload .fig file instead'}
+              </button>
+            </div>
+
+            {/* Error */}
+            {figmaError && (
+              <div style={{ fontSize: 13, color: '#f87171', marginTop: 12, padding: 8, background: 'rgba(248,113,113,0.08)', borderRadius: 6 }}>
+                {figmaError}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

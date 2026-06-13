@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router';
 import {
   Check, Download, Eye, Sun, Moon, Copy,
-  Palette, Type, Sparkles, RefreshCw, ChevronRight
+  Palette, Type, Sparkles, RefreshCw, ChevronRight,
+  Loader2, AlignRight, Save, Clock, Trash2
 } from 'lucide-react';
 
 const STYLE_PRESETS = [
@@ -13,58 +14,14 @@ const STYLE_PRESETS = [
   { id: 'ai', label: 'AI Tool', desc: 'Futuristic, dark-first', color: '#f472b6' },
 ];
 
-const EXPORT_FORMATS = [
-  { id: 'flutter', label: 'Flutter ThemeData', ext: '.dart', color: '#60a5fa', desc: 'ColorScheme, TextTheme, ButtonThemeData' },
-  { id: 'css', label: 'CSS Variables', ext: '.css', color: '#f472b6', desc: 'Custom properties, light + dark modes' },
-  { id: 'json', label: 'JSON Tokens', ext: '.json', color: '#34d399', desc: 'Style Dictionary compatible' },
-  { id: 'tailwind', label: 'Tailwind Config', ext: '.js', color: '#fbbf24', desc: 'tailwind.config.js with all tokens' },
-  { id: 'figma', label: 'Figma Script', ext: '.js', color: '#a78bfa', desc: 'Paste in Figma console to create variables' },
-];
-
-function generatePalette(hex: string): string[] {
-  const shades: string[] = [];
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  const opacities = [0.08, 0.15, 0.25, 0.38, 0.5, 0.65, 0.78, 0.88, 0.95, 1.0];
-  for (const op of opacities) {
-    const nr = Math.round(r * op + 255 * (1 - op));
-    const ng = Math.round(g * op + 255 * (1 - op));
-    const nb = Math.round(b * op + 255 * (1 - op));
-    shades.push(`#${nr.toString(16).padStart(2, '0')}${ng.toString(16).padStart(2, '0')}${nb.toString(16).padStart(2, '0')}`);
-  }
-  return shades;
-}
-
 const COLOR_STOPS = ['50', '100', '200', '300', '400', '500', '600', '700', '800', '900'];
 
-const FONT_SCALE = [
-  { name: 'Display', size: 56, weight: 800 },
-  { name: 'H1', size: 40, weight: 700 },
-  { name: 'H2', size: 32, weight: 700 },
-  { name: 'H3', size: 24, weight: 600 },
-  { name: 'H4', size: 20, weight: 600 },
-  { name: 'Body LG', size: 18, weight: 400 },
-  { name: 'Body', size: 16, weight: 400 },
-  { name: 'Body SM', size: 14, weight: 400 },
-  { name: 'Label', size: 13, weight: 500 },
-  { name: 'Caption', size: 12, weight: 400 },
-];
-
-const RADIUS_SCALE = [
-  { name: 'none', value: '0px' },
-  { name: 'sm', value: '4px' },
-  { name: 'md', value: '8px' },
-  { name: 'lg', value: '12px' },
-  { name: 'xl', value: '16px' },
-  { name: 'full', value: '9999px' },
-];
-
-const SEMANTIC_COLORS = [
-  { name: 'Success', light: '#10b981', dark: '#34d399' },
-  { name: 'Error', light: '#ef4444', dark: '#f87171' },
-  { name: 'Warning', light: '#f59e0b', dark: '#fbbf24' },
-  { name: 'Info', light: '#3b82f6', dark: '#60a5fa' },
+const EXPORT_FORMATS = [
+  { id: 'flutter', label: 'Flutter ThemeData', ext: '.dart', color: '#60a5fa', endpoint: '/export/theme-dart' },
+  { id: 'css', label: 'CSS Variables', ext: '.css', color: '#f472b6', endpoint: '/export/css-vars' },
+  { id: 'json', label: 'JSON Tokens', ext: '.json', color: '#34d399', endpoint: '/export/json-tokens' },
+  { id: 'tailwind', label: 'Tailwind Config', ext: '.js', color: '#fbbf24', endpoint: '/export/tailwind-config' },
+  { id: 'figma', label: 'Figma Script', ext: '.js', color: '#a78bfa', endpoint: '/export/figma-script' },
 ];
 
 export function DesignSystemPage() {
@@ -74,28 +31,131 @@ export function DesignSystemPage() {
   const [primaryColor, setPrimaryColor] = useState('#7C6AF7');
   const [stylePreset, setStylePreset] = useState('saas');
   const [darkMode, setDarkMode] = useState(true);
+  const [rtl, setRtl] = useState(false);
   const [generating, setGenerating] = useState(false);
-  const [generated, setGenerated] = useState(false);
-  const [exported, setExported] = useState<string[]>([]);
+  const [error, setError] = useState('');
+  const [tokens, setTokens] = useState<any>(null);
+  const [exporting, setExporting] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [savedSystems, setSavedSystems] = useState<any[]>([]);
+  const [enhancing, setEnhancing] = useState(false);
+  const [enhancements, setEnhancements] = useState<any>(null);
 
-  const palette = generatePalette(primaryColor);
+  useEffect(() => {
+    fetch('http://localhost:8000/api/design-systems')
+      .then(r => r.ok ? r.json() : [])
+      .then(data => setSavedSystems(data))
+      .catch(() => {});
+  }, []);
 
-  const handleGenerate = () => {
+  const handleGenerate = useCallback(async () => {
     setGenerating(true);
-    setTimeout(() => {
-      setGenerating(false);
-      setGenerated(true);
+    setError('');
+    try {
+      const res = await fetch('http://localhost:8000/generate/design-system', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          brand_name: brand || 'Brand',
+          primary_color: primaryColor,
+          style_preset: stylePreset,
+          dark_mode: darkMode,
+        }),
+      });
+      if (!res.ok) throw new Error('Generation failed');
+      const data = await res.json();
+      setTokens(data);
       setStep(3);
-    }, 2000);
-  };
+    } catch (err) {
+      setError('Failed to generate. Make sure the backend is running on http://localhost:8000');
+    } finally {
+      setGenerating(false);
+    }
+  }, [brand, primaryColor, stylePreset, darkMode]);
 
-  const handleExport = (id: string) => {
-    setExported(prev => prev.includes(id) ? prev : [...prev, id]);
-  };
+  const handleExport = useCallback(async (fmt: typeof EXPORT_FORMATS[0]) => {
+    if (!tokens) return;
+    setExporting(fmt.id);
+    try {
+      const res = await fetch(`http://localhost:8000${fmt.endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tokens }),
+      });
+      if (!res.ok) throw new Error('Export failed');
+      const data = await res.json();
+      const blob = new Blob([data.code], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${brand.replace(/\s+/g, '_').toLowerCase()}_theme${fmt.ext}`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setExporting(null);
+    }
+  }, [tokens, brand]);
+
+  const handleExportAll = useCallback(async () => {
+    for (const fmt of EXPORT_FORMATS) {
+      await handleExport(fmt);
+    }
+  }, [handleExport]);
+
+  const handleSave = useCallback(async () => {
+    if (!tokens) return;
+    setSaving(true);
+    try {
+      const res = await fetch('http://localhost:8000/api/design-systems', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: brand,
+          primary_color: primaryColor,
+          preset: stylePreset,
+          tokens: tokens,
+        }),
+      });
+      if (res.ok) {
+        const saved = await res.json();
+        setSavedSystems(prev => [saved, ...prev]);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSaving(false);
+    }
+  }, [tokens, brand, primaryColor, stylePreset]);
+
+  const handleEnhance = useCallback(async () => {
+    if (!tokens) return;
+    setEnhancing(true);
+    try {
+      const res = await fetch('http://localhost:8000/generate/design-system/enhance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tokens,
+          brand_name: brand,
+          primary_color: primaryColor,
+          preset: stylePreset,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setEnhancements(data.enhancements);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setEnhancing(false);
+    }
+  }, [tokens, brand, primaryColor, stylePreset]);
 
   return (
     <div style={{ padding: '28px 32px', color: '#e8e8f0', fontFamily: 'var(--font-sans)', maxWidth: 1100, margin: '0 auto', minHeight: '100%' }}>
-      {/* Header */}
       <div style={{ marginBottom: 28 }}>
         <h1 style={{ fontSize: 24, fontWeight: 700, letterSpacing: '-0.02em', marginBottom: 4 }}>Design System Generator</h1>
         <p style={{ fontSize: 14, color: '#6b6b8a' }}>Generate a complete token set and export to Flutter, CSS, JSON, and more.</p>
@@ -103,7 +163,7 @@ export function DesignSystemPage() {
 
       {/* Steps */}
       <div style={{ display: 'flex', gap: 0, marginBottom: 36, alignItems: 'center' }}>
-        {['Brand Input', 'Auto-Generation', 'Preview & Export'].map((s, i) => {
+        {['Brand Input', 'Generation', 'Preview & Export'].map((s, i) => {
           const n = i + 1;
           const done = step > n;
           const active = step === n;
@@ -112,28 +172,18 @@ export function DesignSystemPage() {
               <button
                 onClick={() => done && setStep(n)}
                 style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  background: 'none',
-                  border: 'none',
-                  cursor: done ? 'pointer' : 'default',
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  background: 'none', border: 'none', cursor: done ? 'pointer' : 'default',
                   padding: '6px 12px',
                 }}
               >
                 <div style={{
-                  width: 26,
-                  height: 26,
-                  borderRadius: '50%',
+                  width: 26, height: 26, borderRadius: '50%',
                   background: done ? '#7C6AF7' : active ? 'rgba(124,106,247,0.15)' : 'rgba(255,255,255,0.05)',
                   border: done ? '2px solid #7C6AF7' : active ? '2px solid #7C6AF7' : '2px solid rgba(255,255,255,0.1)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: 12,
-                  fontWeight: 700,
-                  color: done ? '#fff' : active ? '#a78bfa' : '#4a4a6a',
-                  flexShrink: 0,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 12, fontWeight: 700,
+                  color: done ? '#fff' : active ? '#a78bfa' : '#4a4a6a', flexShrink: 0,
                 }}>
                   {done ? <Check size={12} /> : n}
                 </div>
@@ -144,6 +194,43 @@ export function DesignSystemPage() {
           );
         })}
       </div>
+
+      {/* Saved Design Systems */}
+      {savedSystems.length > 0 && (
+        <div style={{ marginBottom: 24, background: '#111118', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 12, overflow: 'hidden' }}>
+          <div style={{ padding: '12px 16px', borderBottom: '1px solid rgba(255,255,255,0.04)', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Clock size={14} color="#6b6b8a" />
+            <span style={{ fontSize: 13, fontWeight: 600, color: '#c8c8e0' }}>Saved Design Systems</span>
+            <span style={{ fontSize: 11, color: '#4a4a6a', marginLeft: 'auto' }}>{savedSystems.length}</span>
+          </div>
+          <div style={{ display: 'flex', gap: 8, padding: '10px 12px', overflow: 'auto' }}>
+            {savedSystems.map(ds => (
+              <button
+                key={ds.id}
+                onClick={() => {
+                  setBrand(ds.name);
+                  setPrimaryColor(ds.primary_color);
+                  setStylePreset(ds.preset);
+                  if (ds.tokens) {
+                    setTokens(typeof ds.tokens === 'string' ? JSON.parse(ds.tokens) : ds.tokens);
+                    setStep(3);
+                  }
+                }}
+                style={{
+                  flexShrink: 0, background: '#1a1a28', border: '1px solid rgba(255,255,255,0.06)',
+                  borderRadius: 8, padding: '10px 14px', cursor: 'pointer', textAlign: 'left', minWidth: 160,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                  <div style={{ width: 10, height: 10, borderRadius: 3, background: ds.primary_color }} />
+                  <span style={{ fontSize: 13, fontWeight: 600, color: '#e8e8f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{ds.name}</span>
+                </div>
+                <span style={{ fontSize: 11, color: '#4a4a6a' }}>{ds.preset} · {ds.created_at?.slice(0, 10)}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Step 1: Brand Input */}
       {step === 1 && (
@@ -156,8 +243,6 @@ export function DesignSystemPage() {
                 onChange={e => setBrand(e.target.value)}
                 placeholder="Your brand name"
                 style={{ width: '100%', background: '#1a1a28', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, padding: '11px 14px', color: '#e8e8f0', fontSize: 15, outline: 'none', boxSizing: 'border-box', fontWeight: 500 }}
-                onFocus={e => (e.currentTarget.style.borderColor = 'rgba(124,106,247,0.5)')}
-                onBlur={e => (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)')}
               />
             </div>
 
@@ -197,11 +282,7 @@ export function DesignSystemPage() {
                     style={{
                       background: stylePreset === preset.id ? `${preset.color}15` : '#111118',
                       border: `1px solid ${stylePreset === preset.id ? `${preset.color}40` : 'rgba(255,255,255,0.07)'}`,
-                      borderRadius: 8,
-                      padding: '10px 12px',
-                      cursor: 'pointer',
-                      textAlign: 'left',
-                      transition: 'all 0.15s',
+                      borderRadius: 8, padding: '10px 12px', cursor: 'pointer', textAlign: 'left',
                     }}
                   >
                     <div style={{ fontSize: 13, fontWeight: 600, color: stylePreset === preset.id ? preset.color : '#c8c8e0', marginBottom: 2 }}>{preset.label}</div>
@@ -211,42 +292,50 @@ export function DesignSystemPage() {
               </div>
             </div>
 
+            {error && (
+              <div style={{ fontSize: 13, color: '#ef4444', marginBottom: 12, padding: 8, background: 'rgba(239,68,68,0.08)', borderRadius: 6 }}>
+                {error}
+              </div>
+            )}
+
             <button
               onClick={handleGenerate}
+              disabled={generating}
               style={{
-                width: '100%',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 8,
-                background: '#7C6AF7',
-                border: 'none',
-                color: '#fff',
-                padding: '14px',
-                borderRadius: 10,
-                cursor: 'pointer',
-                fontSize: 15,
-                fontWeight: 600,
+                width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                background: generating ? 'rgba(124,106,247,0.5)' : '#7C6AF7',
+                border: 'none', color: '#fff', padding: '14px', borderRadius: 10,
+                cursor: generating ? 'not-allowed' : 'pointer', fontSize: 15, fontWeight: 600,
               }}
             >
-              <Sparkles size={16} />
-              Generate Design System
+              {generating ? <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> : <Sparkles size={16} />}
+              {generating ? 'Generating...' : 'Generate Design System'}
             </button>
           </div>
 
-          {/* Live preview */}
+          {/* Live preview sidebar */}
           <div>
-            <div style={{ fontSize: 13, color: '#6b6b8a', marginBottom: 12 }}>Color preview</div>
+            <div style={{ fontSize: 13, color: '#6b6b8a', marginBottom: 12 }}>Preview based on inputs</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(10, 1fr)', gap: 2, marginBottom: 24 }}>
-              {palette.map((color, i) => (
-                <div key={i} title={`${COLOR_STOPS[i]}: ${color}`} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
-                  <div style={{ width: '100%', paddingBottom: '100%', background: color, borderRadius: 4 }} />
-                  <span style={{ fontSize: 9, color: '#4a4a6a' }}>{COLOR_STOPS[i]}</span>
-                </div>
-              ))}
+              {(() => {
+                const h = parseInt(primaryColor.slice(1, 3), 16);
+                const s = parseInt(primaryColor.slice(3, 5), 16);
+                const b = parseInt(primaryColor.slice(5, 7), 16);
+                const palette = [0.08, 0.15, 0.28, 0.42, 0.58, 0.72, 0.82, 0.9, 0.96, 1].map(op => {
+                  const nr = Math.round(h * op + 255 * (1 - op));
+                  const ng = Math.round(s * op + 255 * (1 - op));
+                  const nb = Math.round(b * op + 255 * (1 - op));
+                  return `#${nr.toString(16).padStart(2, '0')}${ng.toString(16).padStart(2, '0')}${nb.toString(16).padStart(2, '0')}`;
+                });
+                return palette.map((color, i) => (
+                  <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
+                    <div style={{ width: '100%', paddingBottom: '100%', background: color, borderRadius: 4 }} />
+                    <span style={{ fontSize: 9, color: '#4a4a6a' }}>{COLOR_STOPS[i]}</span>
+                  </div>
+                ));
+              })()}
             </div>
 
-            {/* Component preview */}
             <div style={{ background: '#111118', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 12, padding: 20 }}>
               <div style={{ fontSize: 12, color: '#6b6b8a', marginBottom: 14 }}>Component preview</div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
@@ -255,8 +344,8 @@ export function DesignSystemPage() {
                 <div style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.15)', color: '#e8e8f0', padding: '9px 18px', borderRadius: 8, fontSize: 13 }}>Outline</div>
               </div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {[['Success', '#10b981'], ['Error', '#ef4444'], ['Warning', '#f59e0b'], ['Info', '#3b82f6']].map(([label, color]) => (
-                  <span key={label} style={{ background: `${color}20`, border: `1px solid ${color}40`, color: color as string, padding: '3px 10px', borderRadius: 100, fontSize: 12 }}>{label}</span>
+                {[['Success', '#10b981'], ['Error', '#ef4444'], ['Warning', '#f59e0b'], ['Info', '#3b82f6']].map(([label, c]) => (
+                  <span key={label} style={{ background: `${c}20`, border: `1px solid ${c}40`, color: c, padding: '3px 10px', borderRadius: 100, fontSize: 12 }}>{label}</span>
                 ))}
               </div>
             </div>
@@ -265,27 +354,46 @@ export function DesignSystemPage() {
       )}
 
       {/* Generating */}
-      {generating && (
+      {generating && step === 2 && (
         <div style={{ textAlign: 'center', padding: '80px 0' }}>
           <div style={{ width: 60, height: 60, border: '3px solid rgba(124,106,247,0.2)', borderTopColor: '#7C6AF7', borderRadius: '50%', animation: 'spin 0.8s linear infinite', margin: '0 auto 24px' }} />
           <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 8 }}>Generating your design system...</div>
           <div style={{ fontSize: 14, color: '#6b6b8a' }}>Creating color scales, typography, spacing, and components</div>
-          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
         </div>
       )}
 
       {/* Step 3: Preview + Export */}
-      {step === 3 && generated && !generating && (
+      {step === 3 && tokens && (
         <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
+          {/* Toolbar */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.25)', borderRadius: 100, padding: '5px 14px' }}>
               <Check size={13} color="#10b981" />
-              <span style={{ fontSize: 13, color: '#10b981' }}>Design system generated for {brand}</span>
+              <span style={{ fontSize: 13, color: '#10b981' }}>{tokens.brand_name} — {tokens.style_preset} preset</span>
             </div>
-            <button onClick={() => { setStep(1); setGenerated(false); }} style={{ background: 'none', border: 'none', color: '#6b6b8a', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, fontSize: 13 }}>
+            <button onClick={() => { setStep(1); setTokens(null); setEnhancements(null); }} style={{ background: 'none', border: 'none', color: '#6b6b8a', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, fontSize: 13 }}>
               <RefreshCw size={13} /> Regenerate
             </button>
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              style={{ background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.2)', color: '#34d399', padding: '5px 12px', borderRadius: 7, cursor: saving ? 'not-allowed' : 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 5 }}
+            >
+              {saving ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Save size={13} />}
+              {saving ? 'Saving...' : 'Save'}
+            </button>
+            <button
+              onClick={handleEnhance}
+              disabled={enhancing}
+              style={{ background: enhancing ? 'rgba(244,114,182,0.1)' : 'rgba(244,114,182,0.08)', border: '1px solid rgba(244,114,182,0.25)', color: '#f472b6', padding: '5px 12px', borderRadius: 7, cursor: enhancing ? 'not-allowed' : 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 5 }}
+            >
+              {enhancing ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Sparkles size={13} />}
+              {enhancing ? 'Enhancing...' : 'Improve with AI'}
+            </button>
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+              <button onClick={() => setRtl(r => !r)} style={{ background: rtl ? 'rgba(124,106,247,0.15)' : 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: rtl ? '#a78bfa' : '#6b6b8a', padding: '5px 12px', borderRadius: 7, cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 5 }}>
+                <AlignRight size={13} /> RTL
+              </button>
               <button onClick={() => setDarkMode(false)} style={{ background: !darkMode ? 'rgba(255,255,255,0.1)' : 'none', border: '1px solid rgba(255,255,255,0.1)', color: !darkMode ? '#e8e8f0' : '#6b6b8a', padding: '5px 12px', borderRadius: 7, cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 5 }}>
                 <Sun size={13} /> Light
               </button>
@@ -295,112 +403,198 @@ export function DesignSystemPage() {
             </div>
           </div>
 
+          {/* AI Enhancements */}
+          {enhancements && (
+            <div style={{ background: 'rgba(244,114,182,0.06)', border: '1px solid rgba(244,114,182,0.15)', borderRadius: 10, padding: '14px 18px', marginBottom: 20 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <Sparkles size={14} color="#f472b6" />
+                <span style={{ fontSize: 14, fontWeight: 600, color: '#f472b6' }}>AI Suggestions</span>
+              </div>
+              <div style={{ fontSize: 13, color: '#c8c8e0', marginBottom: 6 }}>{enhancements.suggestion}</div>
+              {enhancements.fonts && (
+                <div style={{ fontSize: 12, color: '#6b6b8a' }}>
+                  Fonts: {enhancements.fonts.display} / {enhancements.fonts.body}
+                </div>
+              )}
+              {enhancements.contrast_issues?.length > 0 && (
+                <div style={{ marginTop: 6 }}>
+                  {enhancements.contrast_issues.map((issue: string, i: number) => (
+                    <div key={i} style={{ fontSize: 12, color: '#f87171' }}>⚠ {issue}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 24 }}>
             {/* Preview */}
             <div>
-              {/* Colors */}
-              <div style={{ background: '#111118', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 12, padding: 20, marginBottom: 16 }}>
+              {/* Color Scales */}
+              <div style={{ background: darkMode ? '#111118' : '#ffffff', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 12, padding: 20, marginBottom: 16 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
                   <Palette size={15} color="#a78bfa" />
-                  <span style={{ fontSize: 14, fontWeight: 600 }}>Colors</span>
+                  <span style={{ fontSize: 14, fontWeight: 600, color: darkMode ? '#e8e8f0' : '#12121a' }}>Colors</span>
                 </div>
-                <div style={{ marginBottom: 14 }}>
-                  <div style={{ fontSize: 12, color: '#6b6b8a', marginBottom: 8 }}>Primary — {brand}</div>
-                  <div style={{ display: 'flex', gap: 3 }}>
-                    {palette.map((c, i) => (
-                      <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
-                        <div style={{ width: '100%', paddingBottom: '100%', background: c, borderRadius: 4, border: i === 6 ? `2px solid ${primaryColor}` : 'none' }} />
-                        <span style={{ fontSize: 9, color: '#4a4a6a' }}>{COLOR_STOPS[i]}</span>
+                {['primary', 'secondary', 'neutral'].map(scaleName => {
+                  const scale = tokens.colors?.[scaleName];
+                  if (!scale) return null;
+                  return (
+                    <div key={scaleName} style={{ marginBottom: 14 }}>
+                      <div style={{ fontSize: 12, color: '#6b6b8a', marginBottom: 8, textTransform: 'capitalize' }}>{scaleName}</div>
+                      <div style={{ display: 'flex', gap: 3 }}>
+                        {COLOR_STOPS.map(stop => (
+                          <div key={stop} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
+                            <div style={{ width: '100%', paddingBottom: '100%', background: scale[stop], borderRadius: 4 }} />
+                            <span style={{ fontSize: 9, color: '#4a4a6a' }}>{stop}</span>
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
-                </div>
+                    </div>
+                  );
+                })}
+
+                {/* Semantic colors */}
                 <div>
-                  <div style={{ fontSize: 12, color: '#6b6b8a', marginBottom: 8 }}>Semantic Colors</div>
+                  <div style={{ fontSize: 12, color: '#6b6b8a', marginBottom: 8 }}>Semantic</div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
-                    {SEMANTIC_COLORS.map(sc => (
-                      <div key={sc.name} style={{ textAlign: 'center' }}>
-                        <div style={{ height: 32, borderRadius: 6, background: darkMode ? sc.dark : sc.light, marginBottom: 4 }} />
-                        <div style={{ fontSize: 11, color: '#6b6b8a' }}>{sc.name}</div>
-                        <div style={{ fontSize: 10, color: '#4a4a6a', fontFamily: 'var(--font-mono)' }}>{darkMode ? sc.dark : sc.light}</div>
-                      </div>
-                    ))}
+                    {['success', 'error', 'warning', 'info'].map(semName => {
+                      const sem = tokens.colors?.semantic?.[semName];
+                      if (!sem) return null;
+                      return (
+                        <div key={semName} style={{ textAlign: 'center' }}>
+                          <div style={{ display: 'flex', gap: 1, marginBottom: 4 }}>
+                            {['100', '500', '900'].map(stop => (
+                              <div key={stop} style={{ flex: 1, height: 20, background: sem[stop], borderRadius: 3 }} />
+                            ))}
+                          </div>
+                          <div style={{ fontSize: 11, color: '#6b6b8a', textTransform: 'capitalize' }}>{semName}</div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               </div>
 
               {/* Typography */}
-              <div style={{ background: '#111118', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 12, padding: 20, marginBottom: 16 }}>
+              <div style={{ background: darkMode ? '#111118' : '#ffffff', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 12, padding: 20, marginBottom: 16 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
                   <Type size={15} color="#a78bfa" />
-                  <span style={{ fontSize: 14, fontWeight: 600 }}>Typography</span>
+                  <span style={{ fontSize: 14, fontWeight: 600, color: darkMode ? '#e8e8f0' : '#12121a' }}>Typography</span>
+                  <span style={{ fontSize: 11, color: '#6b6b8a', marginLeft: 'auto' }}>
+                    {tokens.typography?.font_family?.display} / {tokens.typography?.font_family?.body}
+                  </span>
                 </div>
-                {FONT_SCALE.slice(0, 6).map(f => (
-                  <div key={f.name} style={{ display: 'flex', alignItems: 'baseline', gap: 16, padding: '8px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                    <span style={{ width: 70, fontSize: 11, color: '#4a4a6a', flexShrink: 0, fontFamily: 'var(--font-mono)' }}>{f.name}</span>
-                    <span style={{ fontSize: f.size > 32 ? 32 : f.size, fontWeight: f.weight, color: '#e8e8f0', lineHeight: 1.2 }}>Aa</span>
-                    <span style={{ fontSize: 11, color: '#6b6b8a', marginLeft: 'auto', fontFamily: 'var(--font-mono)' }}>{f.size}px / {f.weight}</span>
+                {tokens.typography?.scale && Object.entries(tokens.typography.scale).slice(0, 7).map(([name, val]: any) => (
+                  <div key={name} style={{ display: 'flex', alignItems: 'baseline', gap: 16, padding: '8px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                    <span style={{ width: 100, fontSize: 11, color: '#4a4a6a', flexShrink: 0, fontFamily: 'var(--font-mono)' }}>{name.replace(/([A-Z])/g, ' $1').trim()}</span>
+                    <span style={{ fontSize: Math.min(val.size, 32), fontWeight: val.weight, color: darkMode ? '#e8e8f0' : '#12121a', lineHeight: 1.2 }}>Aa</span>
+                    <span style={{ fontSize: 11, color: '#6b6b8a', marginLeft: 'auto', fontFamily: 'var(--font-mono)' }}>{val.size}px / w{val.weight}</span>
                   </div>
                 ))}
               </div>
 
-              {/* Border radius */}
-              <div style={{ background: '#111118', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 12, padding: 20 }}>
-                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 16 }}>Border Radius</div>
-                <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end' }}>
-                  {RADIUS_SCALE.map(r => (
-                    <div key={r.name} style={{ textAlign: 'center' }}>
-                      <div style={{ width: 48, height: 48, background: primaryColor + '30', border: `1px solid ${primaryColor}40`, borderRadius: r.value === '9999px' ? '50%' : r.value, marginBottom: 6 }} />
-                      <div style={{ fontSize: 11, color: '#6b6b8a' }}>{r.name}</div>
-                      <div style={{ fontSize: 10, color: '#4a4a6a', fontFamily: 'var(--font-mono)' }}>{r.value}</div>
-                    </div>
-                  ))}
+              {/* Spacing + Radius */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+                <div style={{ background: darkMode ? '#111118' : '#ffffff', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 12, padding: 20 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 16, color: darkMode ? '#e8e8f0' : '#12121a' }}>Spacing</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {tokens.spacing?.map((v: number, i: number) => (
+                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ fontSize: 11, color: '#4a4a6a', width: 30, fontFamily: 'var(--font-mono)' }}>{v}px</span>
+                        <div style={{ flex: 1, height: 8, background: `${tokens.colors?.primary?.['500']}40`, borderRadius: 4, width: `${Math.min(v * 3, 200)}px` }} />
+                      </div>
+                    ))}
+                  </div>
                 </div>
+                <div style={{ background: darkMode ? '#111118' : '#ffffff', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 12, padding: 20 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 16, color: darkMode ? '#e8e8f0' : '#12121a' }}>Border Radius</div>
+                  <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                    {tokens.radius && Object.entries(tokens.radius).map(([name, val]: any) => (
+                      <div key={name} style={{ textAlign: 'center' }}>
+                        <div style={{ width: 40, height: 40, background: `${tokens.colors?.primary?.['500']}30`, border: `1px solid ${tokens.colors?.primary?.['500']}40`, borderRadius: val === 9999 ? '50%' : val, marginBottom: 4 }} />
+                        <div style={{ fontSize: 11, color: '#6b6b8a' }}>{name}</div>
+                        <div style={{ fontSize: 10, color: '#4a4a6a', fontFamily: 'var(--font-mono)' }}>{val === 9999 ? 'full' : `${val}px`}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Component preview */}
+              <div style={{ background: darkMode ? '#111118' : '#ffffff', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 12, padding: 20, marginBottom: 16 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 16, color: darkMode ? '#e8e8f0' : '#12121a' }}>Components</div>
+                {tokens.components && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                    <div>
+                      <div style={{ fontSize: 12, color: '#6b6b8a', marginBottom: 8 }}>Buttons</div>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        {['primary', 'secondary', 'ghost'].map(variant => {
+                          const btn = tokens.components.button?.[variant];
+                          if (!btn) return null;
+                          return (
+                            <button key={variant} style={{
+                              background: btn.bg, color: btn.color, border: variant === 'ghost' ? `1px solid ${btn.color}40` : 'none',
+                              padding: btn.padding, borderRadius: btn.radius, fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                            }}>{variant}</button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 12, color: '#6b6b8a', marginBottom: 8 }}>Card</div>
+                      {tokens.components.card && (
+                        <div style={{ background: tokens.components.card.bg, borderRadius: tokens.components.card.radius, padding: tokens.components.card.padding, border: tokens.components.card.border, boxShadow: tokens.components.card.shadow }}>
+                          <div style={{ fontSize: 16, fontWeight: 700, color: '#12121a', marginBottom: 8 }}>Card Title</div>
+                          <div style={{ fontSize: 13, color: '#6b6b8a', marginBottom: 12 }}>This is a preview of how cards will look with your design tokens.</div>
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            <span style={{ background: tokens.colors?.primary?.['50'], color: tokens.colors?.primary?.['900'], padding: '2px 8px', borderRadius: tokens.components.badge?.radius || 100, fontSize: 12 }}>badge</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
             {/* Export panel */}
             <div>
-              <div style={{ background: '#111118', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 12, overflow: 'hidden' }}>
+              <div style={{ background: darkMode ? '#111118' : '#ffffff', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 12, overflow: 'hidden', position: 'sticky', top: 20 }}>
                 <div style={{ padding: '14px 16px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 2 }}>Export</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: darkMode ? '#e8e8f0' : '#12121a', marginBottom: 2 }}>Export</div>
                   <div style={{ fontSize: 12, color: '#6b6b8a' }}>Download in any format</div>
                 </div>
                 {EXPORT_FORMATS.map(fmt => {
-                  const done = exported.includes(fmt.id);
+                  const isExporting = exporting === fmt.id;
                   return (
                     <div key={fmt.id} style={{ padding: '14px 16px', borderBottom: '1px solid rgba(255,255,255,0.04)', display: 'flex', alignItems: 'center', gap: 12 }}>
                       <div style={{ flex: 1 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
-                          <span style={{ fontSize: 13, fontWeight: 600, color: '#e8e8f0' }}>{fmt.label}</span>
+                          <span style={{ fontSize: 13, fontWeight: 600, color: darkMode ? '#e8e8f0' : '#12121a' }}>{fmt.label}</span>
                           <span style={{ fontSize: 10, color: fmt.color, background: `${fmt.color}15`, border: `1px solid ${fmt.color}30`, padding: '1px 6px', borderRadius: 4, fontFamily: 'var(--font-mono)' }}>{fmt.ext}</span>
                         </div>
-                        <div style={{ fontSize: 11, color: '#6b6b8a' }}>{fmt.desc}</div>
                       </div>
                       <button
-                        onClick={() => handleExport(fmt.id)}
+                        onClick={() => handleExport(fmt)}
+                        disabled={isExporting}
                         style={{
-                          background: done ? 'rgba(16,185,129,0.1)' : `${fmt.color}15`,
-                          border: `1px solid ${done ? 'rgba(16,185,129,0.3)' : `${fmt.color}30`}`,
-                          color: done ? '#10b981' : fmt.color,
-                          width: 32,
-                          height: 32,
-                          borderRadius: 7,
-                          cursor: 'pointer',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          flexShrink: 0,
-                          transition: 'all 0.2s',
+                          background: isExporting ? 'rgba(124,106,247,0.1)' : `${fmt.color}15`,
+                          border: `1px solid ${isExporting ? 'rgba(124,106,247,0.3)' : `${fmt.color}30`}`,
+                          color: isExporting ? '#a78bfa' : fmt.color,
+                          width: 32, height: 32, borderRadius: 7, cursor: isExporting ? 'not-allowed' : 'pointer',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
                         }}
                       >
-                        {done ? <Check size={14} /> : <Download size={14} />}
+                        {isExporting ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <Download size={14} />}
                       </button>
                     </div>
                   );
                 })}
                 <div style={{ padding: '14px 16px' }}>
-                  <button style={{ width: '100%', background: '#7C6AF7', border: 'none', color: '#fff', padding: '11px', borderRadius: 8, cursor: 'pointer', fontSize: 14, fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7 }}>
+                  <button
+                    onClick={handleExportAll}
+                    style={{ width: '100%', background: '#7C6AF7', border: 'none', color: '#fff', padding: '11px', borderRadius: 8, cursor: 'pointer', fontSize: 14, fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7 }}
+                  >
                     <Download size={15} />
                     Export All Formats
                   </button>

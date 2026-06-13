@@ -4,6 +4,9 @@ import {
   Plus, Upload, Wand2, FolderOpen, MoreHorizontal, Component,
   Clock, Zap, TrendingUp, FileCode2, Palette, ArrowUpRight, Search, Trash2
 } from 'lucide-react';
+import { toast } from 'sonner';
+import { ProjectCardSkeleton } from './Skeletons';
+import { NoProjects } from './EmptyStates';
 
 const PROJECTS = [
   {
@@ -214,12 +217,13 @@ export function DashboardPage() {
       if (response.ok) {
         const newProj = await response.json();
         setProjects(prev => [newProj, ...prev]);
+        toast.success(`Project "${name}" created`);
       } else {
-        alert('Failed to create project');
+        toast.error('Failed to create project');
       }
     } catch (err) {
       console.error(err);
-      alert('Error creating project. Ensure backend is running.');
+      toast.error('Error creating project', 'Ensure backend is running');
     }
   };
 
@@ -230,14 +234,15 @@ export function DashboardPage() {
       });
       if (response.ok) {
         setProjects(prev => prev.filter(p => p.id !== id));
+        toast.success('Project deleted');
       } else {
-        // Fallback for mock PROJECTS if not in backend DB
         setProjects(prev => prev.filter(p => p.id !== id));
+        toast.success('Project deleted (local)');
       }
     } catch (err) {
       console.error(err);
-      // Fallback update
       setProjects(prev => prev.filter(p => p.id !== id));
+      toast.success('Project deleted (local)');
     }
   };
 
@@ -340,7 +345,13 @@ export function DashboardPage() {
             </div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 14 }}>
-            {filtered.map(p => <ProjectCard key={p.id} project={p} onDelete={handleDelete} />)}
+            {loading ? (
+              <ProjectCardSkeleton count={2} />
+            ) : filtered.length === 0 ? (
+              <div style={{ gridColumn: '1 / -1' }}>
+                <NoProjects onNew={handleCreateProject} />
+              </div>
+            ) : filtered.map(p => <ProjectCard key={p.id} project={p} onDelete={handleDelete} />)}
           </div>
         </div>
 
