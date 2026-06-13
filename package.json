@@ -75,18 +75,8 @@
     "typescript": "^5.4.5",
     "vite": "6.3.5"
   },
-  "peerDependencies": {
-    "react": "18.3.1",
-    "react-dom": "18.3.1"
-  },
-  "peerDependenciesMeta": {
-    "react": {
-      "optional": true
-    },
-    "react-dom": {
-      "optional": true
-    }
-  },
+
+  "packageManager": "pnpm@10.15.0",
   "pnpm": {
     "overrides": {
       "vite": "6.3.5"
