@@ -8,7 +8,7 @@ import {
   Figma, Upload, EyeOff, X, FileUp
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { api, apiJson, apiFormData } from '../lib/api';
+import { api, apiJson, apiFormData, API_BASE } from '../lib/api';
 import { GallerySkeleton, CodeSkeleton } from './Skeletons';
 import { NoComponents } from './EmptyStates';
 
@@ -246,7 +246,7 @@ export function ProjectPage() {
   const [figmaImporting, setFigmaImporting] = useState(false);
   const [figmaError, setFigmaError] = useState('');
   const [figmaFileUploading, setFigmaFileUploading] = useState(false);
-  const [galleryLoading] = useState(false);
+  const [galleryLoading, setGalleryLoading] = useState(false);
 
   // SVG import state
   const [svgImporting, setSvgImporting] = useState(false);
@@ -279,6 +279,7 @@ export function ProjectPage() {
     if (!id) return;
 
     const loadProjectAndComponents = async () => {
+      setGalleryLoading(true);
       try {
         const projectData = await apiJson(`/api/projects/${id}`);
         setProjectName(projectData.name);
@@ -329,6 +330,8 @@ export function ProjectPage() {
           setComponentsList(initial);
           setSelected(initial[0]);
         }
+      } finally {
+        setGalleryLoading(false);
       }
     };
 
@@ -530,6 +533,17 @@ export function ProjectPage() {
                     const formData = new FormData();
                     formData.append('file', f);
                     try {
+                      // 1. Save raw HTML for the interactive preview mode
+                      await apiFormData(`/api/projects/${id}/raw-html`, formData);
+                      
+                      // Update rawHtml state locally to trigger iframe reload
+                      const reader = new FileReader();
+                      reader.onload = (e) => {
+                        if (e.target?.result) setRawHtml(e.target.result as string);
+                      };
+                      reader.readAsText(f);
+
+                      // 2. Parse basic components
                       const comps = await apiFormData('/parse/html', formData);
                       const mapped = (Array.isArray(comps) ? comps : []).map((c: any) => ({ ...c, color: c.styles?.bg || '#7C6AF7', source: 'html' }));
                       setComponentsList(prev => [...mapped, ...prev]);
@@ -693,6 +707,19 @@ export function ProjectPage() {
               <span style={{ fontSize: 15, fontWeight: 600 }}>{selected.name}</span>
               <ChevronRight size={14} color="#4a4a6a" style={{ display: 'inline' }} />
               <span style={{ fontSize: 13, color: '#6b6b8a' }}>{selected.type}</span>
+              {selected.variants && selected.variants.length > 0 && (
+                <div style={{ display: 'flex', gap: 4, marginLeft: 4 }}>
+                  {selected.variants.map((v: string) => (
+                    <span key={v} style={{
+                      fontSize: 10, color: '#0a84ff', background: 'rgba(10,132,255,0.1)',
+                      border: '1px solid rgba(10,132,255,0.2)', padding: '2px 6px',
+                      borderRadius: 4, whiteSpace: 'nowrap',
+                    }}>
+                      {v}
+                    </span>
+                  ))}
+                </div>
+              )}
               {selected.source === 'figma' && (
                 <a
                   href={selected.figma_url || '#'}
@@ -762,7 +789,7 @@ export function ProjectPage() {
             rawHtml ? (
               <iframe
                 ref={iframeRef}
-                src={`http://localhost:8000/preview/${id}`}
+                src={`${API_BASE}/preview/${id}`}
                 style={{
                   width: '100%',
                   height: '100%',

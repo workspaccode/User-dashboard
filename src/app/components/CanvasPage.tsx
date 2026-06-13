@@ -1,11 +1,13 @@
 import { useNavigate, useParams } from 'react-router';
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import {
   MousePointer2, Square, Circle, Type, Image, Minus, ArrowRight,
   Layers, Undo2, Redo2, ZoomIn, ZoomOut, Download, Box,
-  Eye, EyeOff, Lock, Unlock, Trash2, Copy, Group,
+  Eye, EyeOff, Lock, Unlock, Trash2, Copy, Group, Loader2,
   ChevronDown, ChevronRight as ChevronR
 } from 'lucide-react';
+import { toast } from 'sonner';
+import { apiJson } from '../lib/api';
 
 type Tool = 'select' | 'rect' | 'circle' | 'text' | 'image' | 'line' | 'arrow' | 'container';
 
@@ -52,8 +54,43 @@ export function CanvasPage() {
   const [selected, setSelected] = useState<string | null>('btn');
   const [zoom, setZoom] = useState(100);
   const [layersOpen, setLayersOpen] = useState(true);
+  const [exporting, setExporting] = useState(false);
 
   const selectedItem = items.find(i => i.id === selected);
+
+  const handleExportFlutter = useCallback(async () => {
+    setExporting(true);
+    try {
+      const componentTree = {
+        id: 'canvas-export',
+        name: 'CanvasComponent',
+        type: 'container',
+        children: items.filter(i => i.visible).map(item => ({
+          id: item.id,
+          type: item.type,
+          styles: {
+            bg: item.fill,
+            w: item.w,
+            h: item.h,
+            x: item.x,
+            y: item.y,
+            radius: item.radius,
+          },
+        })),
+      };
+      const data = await apiJson('/generate/flutter', {
+        method: 'POST',
+        body: JSON.stringify({ component_tree: componentTree }),
+      });
+      toast.success('Flutter code generated!');
+      navigator.clipboard.writeText(data.code);
+      toast.success('Code copied to clipboard');
+    } catch {
+      toast.error('Failed to generate Flutter code');
+    } finally {
+      setExporting(false);
+    }
+  }, [items]);
 
   const toggleVisibility = (id: string) => {
     setItems(items.map(i => i.id === id ? { ...i, visible: !i.visible } : i));
@@ -179,9 +216,12 @@ export function CanvasPage() {
           <span style={{ fontSize: 13, color: '#6b6b8a', minWidth: 40, textAlign: 'center', fontFamily: 'var(--font-mono)' }}>{zoom}%</span>
           <button onClick={() => setZoom(z => Math.min(400, z + 25))} style={{ background: 'none', border: 'none', color: '#6b6b8a', cursor: 'pointer', padding: 5, borderRadius: 5 }}><ZoomIn size={15} /></button>
           <div style={{ flex: 1 }} />
-          <button style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.25)', color: '#10b981', padding: '5px 12px', borderRadius: 7, cursor: 'pointer', fontSize: 13 }}>
-            <Download size={13} />
-            Export
+          <button
+            onClick={handleExportFlutter}
+            disabled={exporting}
+            style={{ display: 'flex', alignItems: 'center', gap: 6, background: exporting ? 'rgba(16,185,129,0.05)' : 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.25)', color: exporting ? '#6b6b8a' : '#10b981', padding: '5px 12px', borderRadius: 7, cursor: exporting ? 'not-allowed' : 'pointer', fontSize: 13 }}>
+            {exporting ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Download size={13} />}
+            {exporting ? 'Generating...' : 'Export'}
           </button>
         </div>
 
